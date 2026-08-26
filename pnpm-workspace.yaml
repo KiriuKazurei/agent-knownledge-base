@@ -1,0 +1,16 @@
+packages:
+  - apps/*
+  - packages/*
+
+onlyBuiltDependencies:
+  - '@scarf/scarf'
+  - electron
+  - electron-winstaller
+  - esbuild
+
+confirmModulesPurge: false
+allowBuilds:
+  '@scarf/scarf': set this to true or false
+  electron: set this to true or false
+  electron-winstaller: set this to true or false
+  esbuild: set this to true or false

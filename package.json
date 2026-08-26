@@ -1,0 +1,25 @@
+{
+  "name": "knowledge-agent-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first knowledge management and retrieval hub for people and agents.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24.14.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @kah/desktop dev",
+    "build": "pnpm --filter @kah/desktop build && pnpm build:api",
+    "build:api": "go build -C services/api -o kah-api.exe ./cmd/server",
+    "test": "pnpm test:web && pnpm test:api && pnpm test:worker",
+    "test:web": "pnpm --filter @kah/desktop test",
+    "test:api": "go test ./... -C services/api",
+    "test:worker": "py -3.14 -m unittest discover -s services/worker/tests -v",
+    "typecheck": "pnpm --filter @kah/desktop typecheck",
+    "package:win": "pnpm build:api && pnpm --filter @kah/desktop package:win"
+  },
+  "devDependencies": {
+    "@stoplight/spectral-cli": "^6.15.0"
+  }
+}

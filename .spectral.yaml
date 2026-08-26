@@ -1,0 +1,7 @@
+extends:
+  - spectral:oas
+
+rules:
+  operation-tags: off
+  operation-description: off
+

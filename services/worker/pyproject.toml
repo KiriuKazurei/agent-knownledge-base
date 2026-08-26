@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "knowledge-agent-worker"
+version = "0.1.0"
+description = "Document extraction and embedded search worker for Knowledge Agent Hub"
+requires-python = ">=3.14"
+license = {text = "MIT"}
+dependencies = [
+  "beautifulsoup4>=4.13",
+  "lancedb>=0.25",
+  "openpyxl>=3.1",
+  "pypdf>=6.0",
+  "python-docx>=1.2",
+  "python-pptx>=1.0"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4", "pytest-cov>=6.2", "pyinstaller>=6.15"]
+index = ["pyarrow>=21"]
+
+[project.scripts]
+kah-worker = "knowledge_worker.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowledge_worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+

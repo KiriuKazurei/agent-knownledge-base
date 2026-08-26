@@ -1,0 +1,43 @@
+import '@testing-library/jest-dom/vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { expect, test, vi } from 'vitest'
+import { App, MarkdownContent } from './App'
+import { client } from './api'
+
+vi.mock('./api', () => ({
+  getRuntime: vi.fn(async () => ({apiBaseUrl:'http://127.0.0.1:1',desktopToken:'x',dataRoot:'data',version:'test'})),
+  client: {
+    libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []),
+    document: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
+    providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), backup: vi.fn(), createSavedSearch: vi.fn(), deleteSavedSearch: vi.fn()
+  }
+}))
+
+Object.defineProperty(window, 'kah', { value: { runtimeConfig: vi.fn(), setTitleBarTheme: vi.fn(), selectFiles: vi.fn(async () => []), openPath: vi.fn(), openExternal: vi.fn(), onBackendExit: vi.fn(() => () => {}) } })
+Object.defineProperty(window, 'matchMedia', { value: vi.fn(() => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() })) })
+
+test('renders the accessible knowledge workbench', async () => {
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  expect(screen.getByRole('navigation', {name:'知识库导航'})).toBeInTheDocument()
+  expect(screen.getByRole('textbox', {name:'搜索知识'})).toBeInTheDocument()
+  expect(await screen.findByText('还没有知识文档')).toBeInTheDocument()
+})
+
+test('shows failed Skill imports in the management workspace', async () => {
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  fireEvent.click(screen.getAllByRole('button', { name: 'SkillsAgent 能力包' })[0])
+  expect(await screen.findByText('还没有 Skill')).toBeInTheDocument()
+
+  vi.mocked(window.kah.selectFiles).mockResolvedValueOnce(['C:\\skills\\broken.zip'])
+  vi.mocked(client.importSkill).mockRejectedValueOnce(new Error('invalid skill package'))
+  fireEvent.click(screen.getByRole('button', { name: '导入 SKILL.md' }))
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('invalid skill package')
+})
+test('routes Chinese Markdown links through the link handler', () => {
+  const onLink = vi.fn()
+  render(<MarkdownContent content="[打开中文文档](./章节/第二篇.md)" onLink={onLink} />)
+  fireEvent.click(screen.getByRole('link', { name: '打开中文文档' }))
+  expect(onLink).toHaveBeenCalledWith('./%E7%AB%A0%E8%8A%82/%E7%AC%AC%E4%BA%8C%E7%AF%87.md')
+})

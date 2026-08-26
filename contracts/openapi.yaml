@@ -1,0 +1,819 @@
+openapi: 3.1.0
+info:
+  title: Knowledge Agent Hub API
+  version: 1.0.0
+  description: Local-first evidence retrieval, knowledge management, and optional cited-answer API.
+  contact:
+    name: Knowledge Agent Hub maintainers
+    url: https://github.com/KiriuKazurei/agent-knownledge-base
+  license:
+    name: MIT
+servers:
+  - url: http://127.0.0.1:48761/api/v1
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      security: []
+      operationId: getHealth
+      responses:
+        '200':
+          description: Runtime health
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+  /libraries:
+    get:
+      operationId: listLibraries
+      responses:
+        '200':
+          description: Libraries
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Library'}
+    post:
+      operationId: createLibrary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateLibraryRequest'}
+      responses:
+        '201':
+          description: Created library
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Library'}
+  /libraries/{libraryId}:
+    parameters:
+      - in: path
+        name: libraryId
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      operationId: updateLibrary
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateLibraryRequest'}
+      responses:
+        '200':
+          description: Updated library
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Library'}
+    delete:
+      operationId: deleteLibrary
+      responses:
+        '204': {description: Deleted}
+  /documents:
+    get:
+      operationId: listDocuments
+      parameters:
+        - in: query
+          name: libraryId
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Documents
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Document'}
+  /documents/{documentId}:
+    get:
+      operationId: getDocument
+      parameters:
+        - in: path
+          name: documentId
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: Document with preview
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentDetail'}
+    patch:
+      operationId: updateDocument
+      parameters:
+        - in: path
+          name: documentId
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateDocumentRequest'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Document'}
+    delete:
+      operationId: deleteDocument
+      parameters:
+        - in: path
+          name: documentId
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Deleted}
+  /skills:
+    get:
+      operationId: listSkills
+      responses:
+        '200':
+          description: Installed global Agent Skills
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Skill'}}
+  /skills/{skillId}:
+    parameters:
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getSkill
+      responses:
+        '200':
+          description: Skill metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Skill'}
+    delete:
+      operationId: deleteSkill
+      responses:
+        '204': {description: Deleted}
+  /skills/import:
+    post:
+      operationId: importSkill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ImportSkillRequest'}
+      responses:
+        '202':
+          description: Skill import job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+  /skills/{skillId}/links:
+    parameters:
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    put:
+      operationId: updateSkillLinks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkillLinksRequest'}
+      responses:
+        '200':
+          description: Updated Skill links
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Skill'}
+  /skills/query:
+    post:
+      operationId: querySkills
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkillQueryRequest'}
+      responses:
+        '200':
+          description: Matching Skill metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillQueryResponse'}
+  /skills/{skillId}/manifest:
+    parameters:
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getSkillManifest
+      responses:
+        '200':
+          description: Standard Skill package manifest with SKILL.md content
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillManifest'}
+  /skills/{skillId}/files/{filePath}:
+    parameters:
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+      - in: path
+        name: filePath
+        required: true
+        schema: {type: string}
+    get:
+      operationId: getSkillFile
+      responses:
+        '200':
+          description: Read-only Skill file
+          content:
+            application/octet-stream: {}
+  /imports/files:
+    post:
+      operationId: importFiles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [libraryId, paths]
+              properties:
+                libraryId: {type: string, format: uuid}
+                paths: {type: array, items: {type: string}}
+                watchSource: {type: boolean, default: false}
+      responses:
+        '202':
+          description: Import jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Job'}
+  /imports/url:
+    post:
+      operationId: importUrl
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [libraryId, url]
+              properties:
+                libraryId: {type: string, format: uuid}
+                url: {type: string, format: uri}
+                maxDepth: {type: integer, minimum: 0, maximum: 3, default: 0}
+                maxPages: {type: integer, minimum: 1, maximum: 100, default: 1}
+      responses:
+        '202':
+          description: Import job
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+  /jobs:
+    get:
+      operationId: listJobs
+      responses:
+        '200':
+          description: Jobs
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/Job'}
+  /folders:
+    get:
+      operationId: listFolders
+      parameters:
+        - {in: query, name: libraryId, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Virtual folders
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/VirtualFolder'}}
+    post:
+      operationId: createFolder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateFolderRequest'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VirtualFolder'}
+  /folders/{folderId}:
+    delete:
+      operationId: deleteFolder
+      parameters:
+        - {in: path, name: folderId, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Deleted}
+  /documents/{documentId}/folders/{folderId}:
+    put:
+      operationId: assignDocumentFolder
+      parameters:
+        - {in: path, name: documentId, required: true, schema: {type: string}}
+        - {in: path, name: folderId, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Assigned}
+    delete:
+      operationId: removeDocumentFolder
+      parameters:
+        - {in: path, name: documentId, required: true, schema: {type: string}}
+        - {in: path, name: folderId, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Removed}
+  /sources/watches:
+    get:
+      operationId: listSourceWatches
+      parameters:
+        - {in: query, name: libraryId, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Source watches
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/SourceWatch'}}
+    post:
+      operationId: createSourceWatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateSourceWatchRequest'}
+      responses:
+        '202': {description: Scan queued}
+  /sources/watches/{watchId}:
+    delete:
+      operationId: deleteSourceWatch
+      parameters:
+        - {in: path, name: watchId, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Deleted}
+  /sources/watches/{watchId}/scan:
+    post:
+      operationId: scanSourceWatch
+      parameters:
+        - {in: path, name: watchId, required: true, schema: {type: string}}
+      responses:
+        '202': {description: Scan queued}
+  /indexes/rebuild:
+    post:
+      operationId: rebuildIndex
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RebuildIndexRequest'}
+      responses:
+        '202': {description: Rebuild queued}
+  /saved-searches:
+    get:
+      operationId: listSavedSearches
+      responses:
+        '200':
+          description: Saved searches
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/SavedSearch'}
+    post:
+      operationId: createSavedSearch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SavedSearch'}
+      responses:
+        '201':
+          description: Created saved search
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SavedSearch'}
+  /saved-searches/{savedSearchId}:
+    delete:
+      operationId: deleteSavedSearch
+      parameters:
+        - in: path
+          name: savedSearchId
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '204': {description: Deleted}
+
+  /query:
+    post:
+      operationId: query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryRequest'}
+      responses:
+        '200':
+          description: Query result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryResponse'}
+  /query/stream:
+    post:
+      operationId: queryStream
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryRequest'}
+      responses:
+        '200':
+          description: retrieval, citation, answer_delta, complete, or error events
+          content:
+            text/event-stream:
+              schema: {type: string}
+  /feedback:
+    post:
+      operationId: submitFeedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [requestId, chunkId, relevant]
+              properties:
+                requestId: {type: string}
+                chunkId: {type: string}
+                relevant: {type: boolean}
+                note: {type: string, maxLength: 1000}
+      responses:
+        '204': {description: Recorded}
+  /tokens:
+    get:
+      operationId: listTokens
+      responses:
+        '200':
+          description: Agent tokens
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AgentToken'} }
+    post:
+      operationId: createToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, scopes]
+              properties:
+                name: {type: string}
+                scopes: {type: array, items: {enum: [query, feedback]}}
+                libraryIds: {type: array, items: {type: string, format: uuid}}
+      responses:
+        '201':
+          description: Token, including the one-time plaintext secret
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentToken'}
+  /providers:
+    get:
+      operationId: listProviders
+      responses:
+        '200':
+          description: Providers
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/Provider'} }
+    post:
+      operationId: saveProvider
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Provider'}
+      responses:
+        '200':
+          description: Saved provider
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Provider'}
+  /providers/{providerId}/models:
+    get:
+      operationId: listProviderModels
+      parameters:
+        - in: path
+          name: providerId
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Available provider models
+          content:
+            application/json:
+              schema: {type: object, required: [models], properties: {models: {type: array, items: {type: string}}}}
+  /audit:
+    get:
+      operationId: listAudit
+      responses:
+        '200':
+          description: Recent local audit entries
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/AuditEntry'}}
+  /backups:
+    post:
+      operationId: createBackup
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                includeIndexes: {type: boolean, default: true}
+      responses:
+        '201':
+          description: Backup artifact
+          content:
+            application/json:
+              schema: {type: object, properties: {path: {type: string}, sha256: {type: string}}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  schemas:
+    Health:
+      type: object
+      required: [status, version, worker]
+      properties:
+        status: {const: ok}
+        version: {type: string}
+        worker: {type: string}
+    Library:
+      type: object
+      required: [id, name, allowRemoteModels, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        allowRemoteModels: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreateLibraryRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, maxLength: 1000}
+    UpdateLibraryRequest:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, maxLength: 1000}
+        allowRemoteModels: {type: boolean}
+    Document:
+      type: object
+      required: [id, libraryId, title, mediaType, status, favorite, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        libraryId: {type: string, format: uuid}
+        title: {type: string}
+        mediaType: {type: string}
+        sourcePath: {type: string}
+        sourceUrl: {type: string, format: uri}
+        objectPath: {type: string}
+        contentHash: {type: string}
+        status: {enum: [pending, ready, failed, source_missing]}
+        error: {type: string}
+        tags: {type: array, items: {type: string}}
+        favorite: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    DocumentDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Document'}
+        - type: object
+          properties:
+            preview: {type: array, items: {$ref: '#/components/schemas/Chunk'}}
+    UpdateDocumentRequest:
+      type: object
+      properties:
+        title: {type: string}
+        tags: {type: array, items: {type: string}}
+        content: {type: string, description: Editable only for text and Markdown documents}
+        favorite: {type: boolean}
+    Chunk:
+      type: object
+      required: [id, documentId, text, location, contentHash]
+      properties:
+        id: {type: string}
+        documentId: {type: string, format: uuid}
+        text: {type: string}
+        location: {type: object, additionalProperties: true}
+        contentHash: {type: string}
+    Evidence:
+      allOf:
+        - {$ref: '#/components/schemas/Chunk'}
+        - type: object
+          required: [libraryId, title, scores]
+          properties:
+            libraryId: {type: string, format: uuid}
+            title: {type: string}
+            scores:
+              type: object
+              properties:
+                lexical: {type: number}
+                vector: {type: number}
+                fusion: {type: number}
+                final: {type: number}
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 8000}
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        tags: {type: array, items: {type: string}}
+        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
+        retrievalMode: {enum: [hybrid, lexical, vector], default: hybrid}
+        responseMode: {enum: [evidence, answer], default: evidence}
+        providerId: {type: string}
+    Skill:
+      type: object
+      required: [id, name, description, rootPath, entryPoint, contentHash, status, fileCount, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, maxLength: 64}
+        description: {type: string, maxLength: 1024}
+        compatibility: {type: string, maxLength: 500}
+        license: {type: string}
+        metadata: {type: object, additionalProperties: {type: string}}
+        allowedTools: {type: string}
+        rootPath: {type: string}
+        entryPoint: {type: string, const: SKILL.md}
+        contentHash: {type: string}
+        status: {enum: [ready, failed, invalid]}
+        error: {type: string}
+        fileCount: {type: integer, minimum: 0}
+        usesLibraryIds: {type: array, items: {type: string, format: uuid}}
+        requiresLibraryIds: {type: array, items: {type: string, format: uuid}}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ImportSkillRequest:
+      type: object
+      required: [path]
+      properties:
+        path: {type: string}
+        replace: {type: boolean, default: false}
+    SkillLinksRequest:
+      type: object
+      properties:
+        usesLibraryIds: {type: array, items: {type: string, format: uuid}}
+        requiresLibraryIds: {type: array, items: {type: string, format: uuid}}
+    SkillQueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 8000}
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
+    SavedSearch:
+      type: object
+      required: [id, name, query, libraryIds, tags]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 120}
+        query: {type: string, minLength: 1, maxLength: 8000}
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        tags: {type: array, items: {type: string}}
+    VirtualFolder:
+      type: object
+      required: [id, libraryId, name, createdAt, updatedAt]
+      properties:
+        id: {type: string}
+        libraryId: {type: string}
+        name: {type: string}
+        parentId: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreateFolderRequest:
+      type: object
+      required: [libraryId, name]
+      properties:
+        libraryId: {type: string}
+        name: {type: string, minLength: 1, maxLength: 120}
+        parentId: {type: string}
+    SourceWatch:
+      type: object
+      required: [id, libraryId, rootPath, recursive, enabled]
+      properties:
+        id: {type: string}
+        libraryId: {type: string}
+        rootPath: {type: string}
+        recursive: {type: boolean}
+        enabled: {type: boolean}
+        lastScanAt: {type: string, format: date-time}
+        lastMessage: {type: string}
+    CreateSourceWatchRequest:
+      type: object
+      required: [libraryId, rootPath]
+      properties:
+        libraryId: {type: string}
+        rootPath: {type: string}
+        recursive: {type: boolean, default: true}
+    RebuildIndexRequest:
+      type: object
+      required: [libraryId]
+      properties:
+        libraryId: {type: string}
+
+    SkillQueryResponse:
+      type: object
+      required: [requestId, skills]
+      properties:
+        requestId: {type: string}
+        skills: {type: array, items: {$ref: '#/components/schemas/SkillMatch'}}
+    SkillMatch:
+      allOf:
+        - {$ref: '#/components/schemas/Skill'}
+        - type: object
+          required: [score]
+          properties:
+            score: {type: number}
+    SkillFile:
+      type: object
+      required: [path, size, sha256, mediaType]
+      properties:
+        path: {type: string}
+        size: {type: integer, minimum: 0}
+        sha256: {type: string}
+        mediaType: {type: string}
+        url: {type: string}
+        content: {type: string}
+    SkillManifest:
+      type: object
+      required: [skill, root, entryPoint, files]
+      properties:
+        skill: {$ref: '#/components/schemas/Skill'}
+        root: {type: string}
+        entryPoint: {$ref: '#/components/schemas/SkillFile'}
+        files: {type: array, items: {$ref: '#/components/schemas/SkillFile'}}
+    QueryResponse:
+      type: object
+      required: [requestId, evidence, degraded]
+      properties:
+        requestId: {type: string}
+        evidence: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
+        requiredSkills: {type: array, items: {$ref: '#/components/schemas/Skill'}}
+        answer: {type: string}
+        degraded: {type: boolean}
+        degradedReason: {type: string}
+    Job:
+      type: object
+      required: [id, kind, status, progress, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string}
+        status: {enum: [queued, running, completed, failed, cancelled]}
+        progress: {type: number, minimum: 0, maximum: 1}
+        message: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    AgentToken:
+      type: object
+      required: [id, name, scopes, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        scopes: {type: array, items: {type: string}}
+        libraryIds: {type: array, items: {type: string}}
+        secret: {type: string, description: Returned once at creation}
+        createdAt: {type: string, format: date-time}
+        revokedAt: {type: string, format: date-time}
+    AuditEntry:
+      type: object
+      required: [id, actor, action, target, details, createdAt]
+      properties:
+        id: {type: string}
+        actor: {type: string}
+        action: {type: string}
+        target: {type: string}
+        details: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+    Provider:
+      type: object
+      required: [id, name, kind, baseUrl, local]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {enum: [openai, anthropic, lmstudio, custom]}
+        baseUrl: {type: string, format: uri}
+        model: {type: string}
+        embeddingModel: {type: string}
+        local: {type: boolean}
+        apiKey: {type: string, writeOnly: true}
