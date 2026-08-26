@@ -51,6 +51,18 @@ func testWorkerCommand() (string, []string, bool) {
 	if configured := os.Getenv("KAH_TEST_PYTHON"); configured != "" {
 		return configured, []string{"-u", "-m", "knowledge_worker"}, true
 	}
+	python314Candidates := []string{}
+	if command, err := exec.LookPath("python3.14.exe"); err == nil {
+		python314Candidates = append(python314Candidates, command)
+	}
+	if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+		python314Candidates = append(python314Candidates, filepath.Join(localAppData, "Python", "bin", "python3.14.exe"))
+	}
+	for _, command := range python314Candidates {
+		if err := exec.Command(command, "-c", "import sys").Run(); err == nil {
+			return command, []string{"-u", "-m", "knowledge_worker"}, true
+		}
+	}
 	if _, err := exec.LookPath("py"); err == nil {
 		for _, version := range []string{"3.14", "3.9", "3.7"} {
 			if err := exec.Command("py", "-"+version, "-c", "import sys").Run(); err == nil {

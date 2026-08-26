@@ -14,8 +14,8 @@
     "build:api": "go build -C services/api -o kah-api.exe ./cmd/server",
     "test": "pnpm test:web && pnpm test:api && pnpm test:worker",
     "test:web": "pnpm --filter @kah/desktop test",
-    "test:api": "go test ./... -C services/api",
-    "test:worker": "py -3.14 -m unittest discover -s services/worker/tests -v",
+    "test:api": "go -C services/api test ./...",
+    "test:worker": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-worker.ps1",
     "typecheck": "pnpm --filter @kah/desktop typecheck",
     "package:win": "pnpm build:api && pnpm --filter @kah/desktop package:win"
   },
