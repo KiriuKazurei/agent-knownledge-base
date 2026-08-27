@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
@@ -108,12 +108,20 @@ async function waitForBackend(): Promise<void> {
   let lastError: unknown
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
-      const response = await fetch(`http://127.0.0.1:${API_PORT}/api/v1/health`)
-      if (response.ok) return
+      const health = await fetch('http://127.0.0.1:' + API_PORT + '/api/v1/health')
+      if (health.ok) {
+        const authenticated = await fetch('http://127.0.0.1:' + API_PORT + '/api/v1/libraries', {
+          headers: { Authorization: 'Bearer ' + desktopToken }
+        })
+        if (authenticated.ok) return
+        lastError = new Error('Backend rejected the current desktop token: ' + authenticated.status)
+      } else {
+        lastError = new Error('Backend health returned ' + health.status)
+      }
     } catch (error) { lastError = error }
     await new Promise((resolve) => setTimeout(resolve, 250))
   }
-  throw new Error(`Backend did not become healthy: ${String(lastError ?? 'timeout')}`)
+  throw new Error('Backend did not become healthy for this desktop session: ' + String(lastError ?? 'timeout'))
 }
 
 async function createWindow(): Promise<void> {
@@ -179,5 +187,20 @@ app.whenReady().then(async () => {
   app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) await createWindow() })
 })
 
-app.on('before-quit', () => { isQuitting = true; backend?.kill() })
+function stopBackend(): void {
+  const pid = backend?.pid
+  backend = undefined
+  if (!pid) return
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' })
+    } catch {
+      // The process may already have exited; there is nothing left to clean up.
+    }
+    return
+  }
+  try { process.kill(pid) } catch { /* The process may already have exited. */ }
+}
+
+app.on('before-quit', () => { isQuitting = true; stopBackend() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

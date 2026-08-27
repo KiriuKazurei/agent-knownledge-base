@@ -103,6 +103,23 @@ func TestStage4TokenFeedbackScopeAndRevocation(t *testing.T) {
 	createStage4Chunk(t, server, allowedLibrary, "allowed-chunk", "allowed feedback evidence")
 	createStage4Chunk(t, server, foreignLibrary, "foreign-chunk", "foreign feedback evidence")
 
+	invalidToken := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "invalid-agent", "scopes": []string{"feedback"}, "libraryIds": []string{"missing-library"}}, "desktop-test")
+	if invalidToken.Code != http.StatusBadRequest || !strings.Contains(invalidToken.Body.String(), "libraryIds") {
+		t.Fatalf("unknown library token was accepted: %d %s", invalidToken.Code, invalidToken.Body.String())
+	}
+	blankToken := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "blank-agent", "scopes": []string{"feedback"}, "libraryIds": []string{"  "}}, "desktop-test")
+	if blankToken.Code != http.StatusBadRequest {
+		t.Fatalf("blank library token was accepted: %d %s", blankToken.Code, blankToken.Body.String())
+	}
+	queryResponse := request(t, handler, http.MethodPost, "/api/v1/query", map[string]any{"query": "allowed feedback evidence"}, "desktop-test")
+	if queryResponse.Code != http.StatusOK {
+		t.Fatalf("feedback evidence query: %d %s", queryResponse.Code, queryResponse.Body.String())
+	}
+	var queryResult model.QueryResponse
+	if err := json.Unmarshal(queryResponse.Body.Bytes(), &queryResult); err != nil || queryResult.RequestID == "" {
+		t.Fatalf("feedback evidence query response: %d %s", queryResponse.Code, queryResponse.Body.String())
+	}
+	requestID := queryResult.RequestID
 	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "stage4-agent", "scopes": []string{"feedback"}, "libraryIds": []string{allowedLibrary}}, "desktop-test")
 	if tokenResponse.Code != http.StatusCreated {
 		t.Fatalf("create token: %d %s", tokenResponse.Code, tokenResponse.Body.String())
@@ -113,11 +130,15 @@ func TestStage4TokenFeedbackScopeAndRevocation(t *testing.T) {
 	}
 	tokenID, _ := token["id"].(string)
 	tokenSecret, _ := token["secret"].(string)
-	feedback := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": "query-1", "chunkId": "allowed-chunk", "relevant": true}, tokenSecret)
+	feedback := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": requestID, "chunkId": "allowed-chunk", "relevant": true}, tokenSecret)
 	if feedback.Code != http.StatusNoContent {
 		t.Fatalf("allowed feedback: %d %s", feedback.Code, feedback.Body.String())
 	}
-	foreign := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": "query-1", "chunkId": "foreign-chunk", "relevant": false}, tokenSecret)
+	mismatch := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": "not-this-query", "chunkId": "allowed-chunk", "relevant": true}, tokenSecret)
+	if mismatch.Code != http.StatusBadRequest || !strings.Contains(mismatch.Body.String(), "not returned") {
+		t.Fatalf("feedback accepted an unrelated request id: %d %s", mismatch.Code, mismatch.Body.String())
+	}
+	foreign := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": requestID, "chunkId": "foreign-chunk", "relevant": false}, tokenSecret)
 	if foreign.Code != http.StatusForbidden {
 		t.Fatalf("foreign feedback: %d %s", foreign.Code, foreign.Body.String())
 	}
@@ -125,7 +146,7 @@ func TestStage4TokenFeedbackScopeAndRevocation(t *testing.T) {
 	if revoke.Code != http.StatusNoContent {
 		t.Fatalf("revoke token: %d %s", revoke.Code, revoke.Body.String())
 	}
-	revoked := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": "query-1", "chunkId": "allowed-chunk", "relevant": true}, tokenSecret)
+	revoked := request(t, handler, http.MethodPost, "/api/v1/feedback", map[string]any{"requestId": requestID, "chunkId": "allowed-chunk", "relevant": true}, tokenSecret)
 	if revoked.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked feedback: %d %s", revoked.Code, revoked.Body.String())
 	}

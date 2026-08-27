@@ -3,12 +3,14 @@ package model
 import "time"
 
 type Library struct {
-	ID                string    `json:"id"`
-	Name              string    `json:"name"`
-	Description       string    `json:"description"`
-	AllowRemoteModels bool      `json:"allowRemoteModels"`
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	ID                         string    `json:"id"`
+	Name                       string    `json:"name"`
+	Description                string    `json:"description"`
+	AllowRemoteModels          bool      `json:"allowRemoteModels"`
+	AutoReviewAgentSubmissions bool      `json:"autoReviewAgentSubmissions"`
+	ReviewProviderID           string    `json:"reviewProviderId,omitempty"`
+	CreatedAt                  time.Time `json:"createdAt"`
+	UpdatedAt                  time.Time `json:"updatedAt"`
 }
 
 type Document struct {
@@ -46,6 +48,7 @@ type Skill struct {
 	ContentHash        string            `json:"contentHash"`
 	Status             string            `json:"status"`
 	Error              string            `json:"error,omitempty"`
+	SystemRole         string            `json:"systemRole,omitempty"`
 	FileCount          int               `json:"fileCount"`
 	UsesLibraryIDs     []string          `json:"usesLibraryIds"`
 	RequiresLibraryIDs []string          `json:"requiresLibraryIds"`
@@ -95,6 +98,28 @@ type SkillManifest struct {
 	Root       string      `json:"root"`
 	EntryPoint SkillFile   `json:"entryPoint"`
 	Files      []SkillFile `json:"files"`
+}
+
+type SubmissionFormatter struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	ContentHash string   `json:"contentHash"`
+	Content     string   `json:"content"`
+	Files       []string `json:"files"`
+}
+
+type SubmissionConstraints struct {
+	MaxBytes            int      `json:"maxBytes"`
+	RequiredFrontmatter []string `json:"requiredFrontmatter"`
+	RequiredSections    []string `json:"requiredSections"`
+}
+
+type SubmissionPreparation struct {
+	Ticket      string                `json:"ticket"`
+	ExpiresAt   time.Time             `json:"expiresAt"`
+	Formatter   SubmissionFormatter   `json:"formatter"`
+	Constraints SubmissionConstraints `json:"constraints"`
 }
 
 type Chunk struct {
@@ -158,6 +183,40 @@ type Job struct {
 	Message   string    `json:"message,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+type ReviewRecord struct {
+	ID           string    `json:"id"`
+	ReviewerType string    `json:"reviewerType"`
+	Reviewer     string    `json:"reviewer"`
+	Decision     string    `json:"decision"`
+	Confidence   float64   `json:"confidence,omitempty"`
+	Reason       string    `json:"reason"`
+	Issues       []string  `json:"issues"`
+	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type KnowledgeSubmission struct {
+	ID                     string         `json:"id"`
+	DocumentID             string         `json:"documentId"`
+	LibraryID              string         `json:"libraryId"`
+	Title                  string         `json:"title"`
+	Summary                string         `json:"summary,omitempty"`
+	Tags                   []string       `json:"tags,omitempty"`
+	Provenance             map[string]any `json:"provenance,omitempty"`
+	ContentHash            string         `json:"contentHash"`
+	Status                 string         `json:"status"`
+	ReviewStatus           string         `json:"reviewStatus"`
+	FormatterSkillID       string         `json:"formatterSkillId"`
+	FormatterSkillHash     string         `json:"formatterSkillHash"`
+	SupersedesSubmissionID string         `json:"supersedesSubmissionId,omitempty"`
+	ReviewJobID            string         `json:"reviewJobId,omitempty"`
+	ReviewError            string         `json:"reviewError,omitempty"`
+	SubmittedAt            time.Time      `json:"submittedAt"`
+	UpdatedAt              time.Time      `json:"updatedAt"`
+	Markdown               string         `json:"markdown,omitempty"`
+	Document               *Document      `json:"document,omitempty"`
+	Reviews                []ReviewRecord `json:"reviews,omitempty"`
 }
 
 type AgentToken struct {

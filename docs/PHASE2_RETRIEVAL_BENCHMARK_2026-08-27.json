@@ -1,0 +1,45 @@
+{
+  "fixture": "E:\\AI\\agent-knownledge-base\\services\\worker\\benchmarks\\retrieval_eval.json",
+  "libraryId": "phase2-eval",
+  "documentCount": 18,
+  "chunkCount": 18,
+  "queryCount": 10,
+  "topK": 10,
+  "iterations": 100,
+  "warmup": 10,
+  "backend": "portable-json",
+  "recallTarget": 0.8,
+  "referenceScale": false,
+  "modes": {
+    "lexical": {
+      "retrievalMode": "lexical",
+      "queryCount": 1000,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5484000000000044,
+      "p95Ms": 0.883499999999926,
+      "p99Ms": 0.9799000000000335,
+      "minMs": 0.45919999999999295,
+      "maxMs": 1.1229999999999851
+    },
+    "vector": {
+      "retrievalMode": "vector",
+      "queryCount": 1000,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5440000000001,
+      "p95Ms": 0.8710999999999025,
+      "p99Ms": 0.9896000000000349,
+      "minMs": 0.4608999999999863,
+      "maxMs": 1.1871999999999439
+    },
+    "hybrid": {
+      "retrievalMode": "hybrid",
+      "queryCount": 1000,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5391000000001256,
+      "p95Ms": 0.7071000000000716,
+      "p99Ms": 0.9124999999998717,
+      "minMs": 0.46199999999996244,
+      "maxMs": 1.0487999999999609
+    }
+  }
+}

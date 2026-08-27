@@ -8,33 +8,118 @@ from pathlib import Path
 
 
 TEXT_EXTENSIONS = {
-    ".txt", ".md", ".markdown", ".rst", ".go", ".py", ".js", ".jsx",
+    ".txt", ".md", ".markdown", ".rst", ".csv", ".tsv", ".log", ".ini", ".conf", ".properties", ".go", ".py", ".js", ".jsx",
     ".ts", ".tsx", ".java", ".cs", ".rs", ".cpp", ".c", ".h", ".json",
     ".yaml", ".yml", ".toml", ".xml", ".sql", ".sh", ".ps1", ".css",
 }
 
 
+def _declared_encoding(raw):
+    header = raw[:8192].decode("ascii", errors="ignore")
+    match = re.search(r"charset\s*=\s*[\"']?\s*([A-Za-z0-9._:-]+)", header, flags=re.I)
+    if not match:
+        return None
+    aliases = {
+        "gb2312": "gb18030",
+        "gbk": "gb18030",
+        "gb18030": "gb18030",
+        "936": "gb18030",
+        "utf8": "utf-8",
+        "utf-8": "utf-8",
+        "utf16": "utf-16",
+        "utf-16": "utf-16",
+        "big5": "big5",
+        "cp950": "big5",
+    }
+    return aliases.get(match.group(1).lower().replace("_", "-"))
+
+
+def _text_quality(text):
+    score = 0
+    for character in text:
+        if character == "\ufffd":
+            score -= 10000
+        elif character == "\x00":
+            score -= 1000
+        elif character in "\r\n\t" or character.isprintable():
+            score += 1
+        else:
+            score -= 30
+        if "\u4e00" <= character <= "\u9fff":
+            score += 8
+    return score
+
+
+def _decode_candidate(raw, encoding):
+    try:
+        return raw.decode(encoding)
+    except (LookupError, UnicodeDecodeError):
+        return None
+
+
 def _read_text(path):
     raw = path.read_bytes()
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        pass
-    for encoding in ("gb18030", "utf-16"):
-        try:
-            return raw.decode(encoding)
-        except UnicodeDecodeError:
-            pass
-    return raw.decode("utf-8", errors="replace")
+    if not raw:
+        return ""
+    bom_encodings = (
+        (b"\xef\xbb\xbf", "utf-8-sig"),
+        (b"\xff\xfe\x00\x00", "utf-32"),
+        (b"\x00\x00\xfe\xff", "utf-32"),
+        (b"\xff\xfe", "utf-16"),
+        (b"\xfe\xff", "utf-16"),
+    )
+    for prefix, encoding in bom_encodings:
+        if raw.startswith(prefix):
+            decoded = _decode_candidate(raw, encoding)
+            if decoded is None:
+                raise UnicodeError("invalid {} document".format(encoding))
+            return decoded
+
+    declared = _declared_encoding(raw)
+    if declared:
+        decoded = _decode_candidate(raw, declared)
+        if decoded is not None:
+            return decoded
+
+    utf8_text = _decode_candidate(raw, "utf-8")
+    if utf8_text is not None:
+        return utf8_text
+
+    candidates = []
+    if len(raw) >= 4 and len(raw) % 2 == 0:
+        candidates.extend(("utf-16-le", "utf-16-be"))
+    candidates.extend(("gb18030", "big5", "shift_jis", "euc_jp", "cp1252"))
+    best = None
+    best_score = None
+    for encoding in candidates:
+        decoded = _decode_candidate(raw, encoding)
+        if decoded is None:
+            continue
+        score = _text_quality(decoded)
+        if best is None or score > best_score:
+            best, best_score = decoded, score
+    if best is not None:
+        return best
+    raise UnicodeError("unable to decode text document without replacement characters")
 
 
 def _text_blocks(path):
     text = _read_text(path)
+    lines = text.splitlines()
+    content_lines = list(enumerate(lines, 1))
+    if lines and lines[0].strip() == "---":
+        closing = None
+        for index in range(1, len(lines)):
+            if lines[index].strip() == "---":
+                closing = index
+                break
+        if closing is not None:
+            content_lines = list(enumerate(lines[closing + 1:], closing + 2))
     blocks = []
     current_heading = None
     buffer = []
     start_line = 1
-    for line_number, line in enumerate(text.splitlines(), 1):
+    for line_number, line in content_lines:
         heading = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$", line)
         if heading and buffer:
             blocks.append(("\n".join(buffer), {"kind": "text", "heading": current_heading, "lineStart": start_line, "lineEnd": line_number - 1}))
@@ -46,10 +131,8 @@ def _text_blocks(path):
             start_line = line_number
         buffer.append(line)
     if buffer:
-        blocks.append(("\n".join(buffer), {"kind": "text", "heading": current_heading, "lineStart": start_line, "lineEnd": len(text.splitlines()) or 1}))
+        blocks.append(("\n".join(buffer), {"kind": "text", "heading": current_heading, "lineStart": start_line, "lineEnd": len(lines) or 1}))
     return blocks
-
-
 def _pdf_blocks(path):
     from pypdf import PdfReader
     reader = PdfReader(str(path))
@@ -160,7 +243,9 @@ def _split(text, location, target=1200, overlap=120):
 def parse_document(path_value, document_id, media_type="", original_name=""):
     path = Path(path_value).resolve(strict=True)
     suffix = (Path(original_name).suffix or path.suffix).lower()
-    if suffix in TEXT_EXTENSIONS or media_type.startswith("text/"):
+    if suffix in {".html", ".htm"} or "html" in media_type:
+        blocks = _html_blocks(path)
+    elif suffix in TEXT_EXTENSIONS or media_type.startswith("text/"):
         blocks = _text_blocks(path)
     elif suffix == ".pdf":
         blocks = _pdf_blocks(path)
@@ -170,8 +255,6 @@ def parse_document(path_value, document_id, media_type="", original_name=""):
         blocks = _xlsx_blocks(path)
     elif suffix == ".pptx":
         blocks = _pptx_blocks(path)
-    elif suffix in {".html", ".htm"} or "html" in media_type:
-        blocks = _html_blocks(path)
     else:
         raise ValueError("Unsupported document format: {}".format(suffix or media_type))
 

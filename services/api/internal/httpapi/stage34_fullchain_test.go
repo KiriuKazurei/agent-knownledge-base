@@ -335,3 +335,216 @@ func TestStage4ProviderModelsAnswerStreamAndAgentQueryUseRealWorker(t *testing.T
 		t.Fatalf("agent token gained management access: %d %s", management.Code, management.Body.String())
 	}
 }
+
+func TestStage3SourceWatchUpdatesAndMarksMissing(t *testing.T) {
+	_, handler := testServerWithWorker(t)
+	libraryID := createStage4Library(t, handler, "来源状态收口")
+	root := t.TempDir()
+	source := filepath.Join(root, "tracked.md")
+	if err := os.WriteFile(source, []byte("# 初始\n\n旧来源内容\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	created := request(t, handler, http.MethodPost, "/api/v1/sources/watches", map[string]any{"libraryId": libraryID, "rootPath": root, "recursive": true}, "desktop-test")
+	if created.Code != http.StatusAccepted {
+		t.Fatalf("create watch: %d %s", created.Code, created.Body.String())
+	}
+	var result struct {
+		Watch model.SourceWatch `json:"watch"`
+		Job   model.Job         `json:"job"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	waitForStage34Job(t, handler, result.Job.ID)
+	listDocuments := func() []model.Document {
+		response := request(t, handler, http.MethodGet, "/api/v1/documents?libraryId="+url.QueryEscape(libraryID), nil, "desktop-test")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list documents: %d %s", response.Code, response.Body.String())
+		}
+		var documents []model.Document
+		if err := json.Unmarshal(response.Body.Bytes(), &documents); err != nil {
+			t.Fatal(err)
+		}
+		return documents
+	}
+	documents := listDocuments()
+	if len(documents) != 1 {
+		t.Fatalf("expected one watched document, got %#v", documents)
+	}
+	documentID := documents[0].ID
+	if err := os.WriteFile(source, []byte("# 已修改\n\n新来源内容必须替换旧索引。\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	scan := request(t, handler, http.MethodPost, "/api/v1/sources/watches/"+result.Watch.ID+"/scan", nil, "desktop-test")
+	if scan.Code != http.StatusAccepted {
+		t.Fatalf("scan changed source: %d %s", scan.Code, scan.Body.String())
+	}
+	var changedJob model.Job
+	if err := json.Unmarshal(scan.Body.Bytes(), &changedJob); err != nil {
+		t.Fatal(err)
+	}
+	waitForStage34Job(t, handler, changedJob.ID)
+	documents = listDocuments()
+	if len(documents) != 1 || documents[0].ID != documentID || documents[0].Status != "ready" {
+		t.Fatalf("source modification duplicated or lost document: %#v", documents)
+	}
+	detail := request(t, handler, http.MethodGet, "/api/v1/documents/"+documentID, nil, "desktop-test")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), "新来源内容") || strings.Contains(detail.Body.String(), "旧来源内容") {
+		t.Fatalf("source modification did not replace preview: %d %s", detail.Code, detail.Body.String())
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	scan = request(t, handler, http.MethodPost, "/api/v1/sources/watches/"+result.Watch.ID+"/scan", nil, "desktop-test")
+	if scan.Code != http.StatusAccepted {
+		t.Fatalf("scan deleted source: %d %s", scan.Code, scan.Body.String())
+	}
+	if err := json.Unmarshal(scan.Body.Bytes(), &changedJob); err != nil {
+		t.Fatal(err)
+	}
+	waitForStage34Job(t, handler, changedJob.ID)
+	documents = listDocuments()
+	if len(documents) != 1 || documents[0].ID != documentID || documents[0].Status != "source_missing" {
+		t.Fatalf("deleted source was not marked missing: %#v", documents)
+	}
+	query := request(t, handler, http.MethodPost, "/api/v1/query", map[string]any{"query": "新来源内容", "libraryIds": []string{libraryID}}, "desktop-test")
+	if query.Code != http.StatusOK || strings.Contains(query.Body.String(), documentID) {
+		t.Fatalf("source_missing document remained searchable: %d %s", query.Code, query.Body.String())
+	}
+}
+
+func TestStage4AgentCannotReadUnlinkedSkill(t *testing.T) {
+	server, handler := testServer(t)
+	allowedLibrary := createStage4Library(t, handler, "Agent 可见库")
+	skillRoot := t.TempDir()
+	linkedPath := filepath.Join(skillRoot, "linked.md")
+	unlinkedPath := filepath.Join(skillRoot, "unlinked.md")
+	content := []byte("---\nname: limited-skill\ndescription: linked agent skill\n---\n\n# Linked\n")
+	if err := os.WriteFile(linkedPath, content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unlinkedPath, []byte("---\nname: hidden-skill\ndescription: unlinked agent skill\n---\n\n# Hidden\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	linked, err := server.Store.ImportSkill(context.Background(), linkedPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.SetSkillLinks(context.Background(), linked.ID, []string{allowedLibrary}, nil); err != nil {
+		t.Fatal(err)
+	}
+	unlinked, err := server.Store.ImportSkill(context.Background(), unlinkedPath, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "limited-agent", "scopes": []string{"query"}, "libraryIds": []string{allowedLibrary}}, "desktop-test")
+	if tokenResponse.Code != http.StatusCreated {
+		t.Fatalf("create agent token: %d %s", tokenResponse.Code, tokenResponse.Body.String())
+	}
+	var token model.AgentToken
+	if err := json.Unmarshal(tokenResponse.Body.Bytes(), &token); err != nil || token.Secret == "" {
+		t.Fatalf("token response: %d %s", tokenResponse.Code, tokenResponse.Body.String())
+	}
+	query := request(t, handler, http.MethodPost, "/api/v1/skills/query", map[string]any{"query": "skill", "topK": 20}, token.Secret)
+	if query.Code != http.StatusOK || !strings.Contains(query.Body.String(), linked.ID) || strings.Contains(query.Body.String(), unlinked.ID) {
+		t.Fatalf("agent skill query crossed library boundary: %d %s", query.Code, query.Body.String())
+	}
+	manifest := request(t, handler, http.MethodGet, "/api/v1/skills/"+unlinked.ID+"/manifest", nil, token.Secret)
+	if manifest.Code != http.StatusForbidden {
+		t.Fatalf("unlinked skill manifest was readable: %d %s", manifest.Code, manifest.Body.String())
+	}
+	file := request(t, handler, http.MethodGet, "/api/v1/skills/"+unlinked.ID+"/files/SKILL.md", nil, token.Secret)
+	if file.Code != http.StatusForbidden {
+		t.Fatalf("unlinked skill file was readable: %d %s", file.Code, file.Body.String())
+	}
+}
+
+func TestStage3URLImportFailsWhenIndexUpsertFails(t *testing.T) {
+	command, detectedArgs, ok := testWorkerCommand()
+	if !ok {
+		t.Skip("no usable Python interpreter was found for the Worker failure-path test")
+	}
+	script := filepath.Join(t.TempDir(), "failing_worker.py")
+	scriptBody := `import json
+import sys
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "health":
+        result = {"status": "ok"}
+        response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+    elif method == "parse":
+        result = {"chunks": [{"id": "url-failure-chunk", "text": "URL import body", "location": {"ordinal": 0}, "contentHash": "url-failure-hash"}]}
+        response = {"jsonrpc": "2.0", "id": request["id"], "result": result}
+    elif method == "index_upsert":
+        response = {"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32001, "message": "forced index failure"}}
+    else:
+        response = {"jsonrpc": "2.0", "id": request["id"], "result": {}}
+    print(json.dumps(response), flush=True)
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	workerArgs := []string{"-u", script}
+	if base := strings.ToLower(filepath.Base(command)); base == "py" || base == "py.exe" {
+		workerArgs = []string{detectedArgs[0], "-u", script}
+	}
+	store, err := storage.Open(filepath.Join(t.TempDir(), "data"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerClient, err := worker.Start(context.Background(), command, workerArgs, filepath.Dir(script), store.DataRoot)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("start failing worker: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = workerClient.Close()
+		_ = store.Close()
+	})
+	server := New(config.Config{DesktopToken: "desktop-test", Version: "test"}, store, workerClient, nil)
+	library, err := store.CreateLibrary(context.Background(), "URL failure", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	web := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/robots.txt":
+			response.Header().Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(response, "User-agent: *\nAllow: /\n")
+		case "/page.html":
+			response.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = io.WriteString(response, "<html><body><h1>URL import body</h1></body></html>")
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer web.Close()
+	job, err := store.CreateJob(context.Background(), "url_import", map[string]any{"libraryId": library.ID, "url": web.URL + "/page.html", "maxDepth": 0, "maxPages": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.runURLImportControlled(job.ID, library.ID, web.URL+"/page.html", 0, 1)
+	jobs, err := store.ListJobs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failedJob *model.Job
+	for index := range jobs {
+		if jobs[index].ID == job.ID {
+			failedJob = &jobs[index]
+			break
+		}
+	}
+	if failedJob == nil || failedJob.Status != "failed" || !strings.Contains(failedJob.Message, "forced index failure") {
+		t.Fatalf("URL import did not fail after index error: %#v", failedJob)
+	}
+	documents, err := store.ListDocumentsFiltered(context.Background(), library.ID, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(documents) != 1 || documents[0].Status != "failed" || !strings.Contains(documents[0].Error, "forced index failure") {
+		t.Fatalf("URL document did not retain failed state: %#v", documents)
+	}
+}

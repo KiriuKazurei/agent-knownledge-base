@@ -51,7 +51,13 @@ func actorName(c *gin.Context) string {
 }
 
 func New(cfg config.Config, store *storage.Store, workerClient *worker.Client, logger *slog.Logger) *Server {
-	return &Server{Config: cfg, Store: store, Worker: workerClient, Providers: providers.New(), Logger: logger}
+	s := &Server{Config: cfg, Store: store, Worker: workerClient, Providers: providers.New(), Logger: logger}
+	if store != nil {
+		if _, err := store.EnsureSubmissionFormatter(context.Background()); err != nil && logger != nil {
+			logger.Warn("failed to ensure submission formatter Skill", "error", err)
+		}
+	}
+	return s
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -68,6 +74,13 @@ func (s *Server) Router() *gin.Engine {
 	auth.GET("/skills/:id/manifest", s.requireScope("query"), s.skillManifest)
 	auth.GET("/skills/:id/files/*path", s.requireScope("query"), s.skillFile)
 	auth.POST("/feedback", s.requireScope("feedback"), s.feedback)
+	auth.POST("/knowledge-submissions/prepare", s.requireScope("submit"), s.prepareKnowledgeSubmission)
+	auth.GET("/knowledge-submissions", s.requireScope("submit"), s.listKnowledgeSubmissions)
+	auth.GET("/knowledge-submissions/:id", s.requireScope("submit"), s.getKnowledgeSubmission)
+	auth.POST("/knowledge-submissions", s.requireScope("submit"), s.submitKnowledgeSubmission)
+	auth.POST("/knowledge-submissions/:id/approve", requireDesktop(), s.approveKnowledgeSubmission)
+	auth.POST("/knowledge-submissions/:id/reject", requireDesktop(), s.rejectKnowledgeSubmission)
+	auth.POST("/knowledge-submissions/:id/retry-review", requireDesktop(), s.retryKnowledgeSubmissionReview)
 	admin := auth.Group("")
 	admin.Use(requireDesktop())
 	admin.GET("/libraries", s.listLibraries)
@@ -247,14 +260,56 @@ func (s *Server) createLibrary(c *gin.Context) {
 }
 func (s *Server) updateLibrary(c *gin.Context) {
 	var input struct {
-		Name              *string `json:"name"`
-		Description       *string `json:"description"`
-		AllowRemoteModels *bool   `json:"allowRemoteModels"`
+		Name                       *string `json:"name"`
+		Description                *string `json:"description"`
+		AllowRemoteModels          *bool   `json:"allowRemoteModels"`
+		AutoReviewAgentSubmissions *bool   `json:"autoReviewAgentSubmissions"`
+		ReviewProviderID           *string `json:"reviewProviderId"`
 	}
 	if !bind(c, &input) {
 		return
 	}
-	item, err := s.Store.UpdateLibrary(operationContext(c), c.Param("id"), input.Name, input.Description, input.AllowRemoteModels)
+	current, err := s.Store.GetLibrary(operationContext(c), c.Param("id"))
+	if errors.Is(err, sql.ErrNoRows) {
+		s.problem(c, 404, "library_not_found", "Library not found", false)
+		return
+	}
+	if err != nil {
+		s.problem(c, 500, "database_error", err.Error(), true)
+		return
+	}
+	allowRemote := current.AllowRemoteModels
+	if input.AllowRemoteModels != nil {
+		allowRemote = *input.AllowRemoteModels
+	}
+	autoReview := current.AutoReviewAgentSubmissions
+	if input.AutoReviewAgentSubmissions != nil {
+		autoReview = *input.AutoReviewAgentSubmissions
+	}
+	reviewProviderID := current.ReviewProviderID
+	if input.ReviewProviderID != nil {
+		reviewProviderID = strings.TrimSpace(*input.ReviewProviderID)
+	}
+	if autoReview && reviewProviderID == "" {
+		s.problem(c, 400, "review_provider_required", "reviewProviderId is required when automatic review is enabled", false)
+		return
+	}
+	if autoReview {
+		provider, providerErr := s.Store.GetProvider(operationContext(c), reviewProviderID)
+		if errors.Is(providerErr, sql.ErrNoRows) {
+			s.problem(c, 400, "review_provider_not_found", "review provider was not found", false)
+			return
+		}
+		if providerErr != nil {
+			s.problem(c, 500, "database_error", providerErr.Error(), true)
+			return
+		}
+		if !provider.Local && !allowRemote {
+			s.problem(c, 400, "remote_review_not_allowed", "remote review requires allowRemoteModels", false)
+			return
+		}
+	}
+	item, err := s.Store.UpdateLibrary(operationContext(c), c.Param("id"), input.Name, input.Description, input.AllowRemoteModels, input.AutoReviewAgentSubmissions, input.ReviewProviderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, 404, "library_not_found", "Library not found", false)
 		return
@@ -310,10 +365,14 @@ func (s *Server) repairDocumentText(ctx context.Context, detail model.DocumentDe
 		return err
 	}
 	if err := s.Store.ReplaceChunks(ctx, detail.ID, chunks); err != nil {
+		_ = s.Store.FailDocument(ctx, detail.ID, err)
 		return err
 	}
 	if s.Worker != nil {
-		_ = s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": detail.LibraryID, "documentId": detail.ID, "chunks": chunks}, nil)
+		if err := s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": detail.LibraryID, "documentId": detail.ID, "chunks": chunks}, nil); err != nil {
+			_ = s.Store.FailDocument(ctx, detail.ID, err)
+			return err
+		}
 	}
 	return nil
 }
@@ -355,11 +414,19 @@ func (s *Server) updateDocument(c *gin.Context) {
 	}
 	if input.Content != nil {
 		if err := s.updateTextContent(operationContext(c), c.Param("id"), *input.Content); err != nil {
-			s.problem(c, 400, "content_update_failed", err.Error(), false)
+			if errors.Is(err, sql.ErrNoRows) {
+				s.problem(c, http.StatusNotFound, "document_not_found", "Document not found", false)
+			} else {
+				s.problem(c, 400, "content_update_failed", err.Error(), false)
+			}
 			return
 		}
 	}
 	item, err := s.Store.UpdateDocument(operationContext(c), c.Param("id"), input.Title, input.Tags, input.Favorite)
+	if errors.Is(err, sql.ErrNoRows) {
+		s.problem(c, http.StatusNotFound, "document_not_found", "Document not found", false)
+		return
+	}
 	if err != nil {
 		s.problem(c, 500, "document_update_failed", err.Error(), true)
 		return
@@ -480,13 +547,11 @@ func (s *Server) querySkills(c *gin.Context) {
 		s.problem(c, http.StatusBadRequest, "invalid_skill_query", "topK must be between 1 and 100", false)
 		return
 	}
-	if len(req.LibraryIDs) > 0 {
-		libraries, ok := s.authorizeLibraries(c, req.LibraryIDs)
-		if !ok {
-			return
-		}
-		req.LibraryIDs = libraries
+	libraries, ok := s.authorizeLibraries(c, req.LibraryIDs)
+	if !ok {
+		return
 	}
+	req.LibraryIDs = libraries
 	items, err := s.Store.SearchSkills(operationContext(c), req)
 	if err != nil {
 		s.problem(c, http.StatusInternalServerError, "skill_query_failed", err.Error(), true)
@@ -497,6 +562,9 @@ func (s *Server) querySkills(c *gin.Context) {
 }
 
 func (s *Server) skillManifest(c *gin.Context) {
+	if !s.authorizeSkill(c, c.Param("id")) {
+		return
+	}
 	item, err := s.Store.GetSkill(operationContext(c), c.Param("id"))
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, http.StatusNotFound, "skill_not_found", "Skill not found", false)
@@ -539,6 +607,9 @@ func skillFileURL(id, relative string) string {
 }
 
 func (s *Server) skillFile(c *gin.Context) {
+	if !s.authorizeSkill(c, c.Param("id")) {
+		return
+	}
 	target, file, err := s.Store.ReadSkillFile(operationContext(c), c.Param("id"), strings.TrimPrefix(c.Param("path"), "/"))
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, http.StatusNotFound, "skill_file_not_found", "Skill file not found", false)
@@ -576,7 +647,10 @@ func (s *Server) updateTextContent(ctx context.Context, id, content string) erro
 		return err
 	}
 	if s.Worker != nil {
-		_ = s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": detail.LibraryID, "documentId": id, "chunks": chunks}, nil)
+		if err := s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": detail.LibraryID, "documentId": id, "chunks": chunks}, nil); err != nil {
+			_ = s.Store.FailDocument(ctx, id, err)
+			return err
+		}
 	}
 	return nil
 }
@@ -607,12 +681,15 @@ func (s *Server) importFiles(c *gin.Context) {
 	}
 	jobs := []model.Job{}
 	for _, path := range input.Paths {
-		clean := filepath.Clean(path)
+		clean, err := filepath.Abs(filepath.Clean(path))
+		if err != nil {
+			continue
+		}
 		info, err := os.Stat(clean)
 		if err != nil || info.IsDir() {
 			continue
 		}
-		job, err := s.Store.CreateJob(operationContext(c), "file_import", map[string]any{"name": filepath.Base(clean)})
+		job, err := s.Store.CreateJob(operationContext(c), "file_import", map[string]any{"libraryId": input.LibraryID, "path": clean, "name": filepath.Base(clean)})
 		if err != nil {
 			continue
 		}
@@ -634,16 +711,37 @@ func (s *Server) runFileImport(jobID, libraryID, path string) {
 		s.failJob(ctx, jobID, err)
 		return
 	}
+	if handled, syncErr := s.syncExistingSourceFile(ctx, jobID, libraryID, path, relative, digest); handled {
+		if syncErr != nil {
+			s.failJob(ctx, jobID, syncErr)
+		}
+		return
+	}
 	if existing, lookupErr := s.Store.FindDocumentByHash(ctx, libraryID, digest); lookupErr == nil {
 		needsRepair, repairErr := s.Store.DocumentNeedsTextRepair(ctx, existing.ID)
-		if repairErr == nil && needsRepair {
+		if repairErr != nil {
+			s.failJob(ctx, jobID, repairErr)
+			return
+		}
+		if needsRepair {
 			_ = s.Store.UpdateJob(ctx, jobID, "running", 0.8, "Repairing text encoding")
-			if detail, detailErr := s.Store.GetDocument(ctx, existing.ID); detailErr == nil {
-				if repairErr = s.repairDocumentText(ctx, detail); repairErr == nil {
-					_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Repaired "+existing.Title)
-					return
-				}
+			detail, detailErr := s.Store.GetDocument(ctx, existing.ID)
+			if detailErr != nil {
+				s.failJob(ctx, jobID, detailErr)
+				return
 			}
+			if repairErr = s.repairDocumentText(ctx, detail); repairErr != nil {
+				s.failJob(ctx, jobID, repairErr)
+				return
+			}
+			_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Repaired "+existing.Title)
+			return
+		}
+		if renamed, renameErr := s.restoreRenamedSource(ctx, jobID, path, existing); renamed {
+			if renameErr != nil {
+				s.failJob(ctx, jobID, renameErr)
+			}
+			return
 		}
 		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Deduplicated "+existing.Title)
 		return
@@ -655,7 +753,11 @@ func (s *Server) runFileImport(jobID, libraryID, path string) {
 		return
 	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.35, "Extracting document")
-	resolved, _ := s.Store.Resolve(relative)
+	resolved, err := s.Store.Resolve(relative)
+	if err != nil {
+		s.failJob(ctx, jobID, err)
+		return
+	}
 	chunks, err := s.parseDocument(ctx, doc, resolved)
 	if err != nil {
 		_ = s.Store.FailDocument(ctx, doc.ID, err)
@@ -667,7 +769,11 @@ func (s *Server) runFileImport(jobID, libraryID, path string) {
 		return
 	}
 	if s.Worker != nil {
-		_ = s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": libraryID, "documentId": doc.ID, "chunks": chunks}, nil)
+		if err := s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": libraryID, "documentId": doc.ID, "chunks": chunks}, nil); err != nil {
+			_ = s.Store.FailDocument(ctx, doc.ID, err)
+			s.failJob(ctx, jobID, err)
+			return
+		}
 	}
 	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported "+doc.Title)
 }
@@ -688,7 +794,11 @@ func (s *Server) parseDocument(ctx context.Context, doc model.Document, path str
 		if err != nil {
 			return nil, err
 		}
-		return fallbackChunks(doc.ID, string(bytes), map[string]any{"kind": "text"}), nil
+		text, _, err := decodeTextBytes(bytes)
+		if err != nil {
+			return nil, err
+		}
+		return fallbackChunks(doc.ID, text, map[string]any{"kind": "text"}), nil
 	}
 	return nil, errors.New("document worker is unavailable for this format")
 }
@@ -738,6 +848,12 @@ func mediaTypeFor(path string) string {
 		return "text/markdown"
 	case ".yaml", ".yml":
 		return "text/yaml"
+	case ".csv":
+		return "text/csv"
+	case ".tsv":
+		return "text/tab-separated-values"
+	case ".txt", ".rst", ".log", ".ini", ".conf", ".properties":
+		return "text/plain"
 	case ".json":
 		return "application/json"
 	case ".go", ".py", ".js", ".jsx", ".ts", ".tsx", ".java", ".cs", ".rs", ".cpp", ".c", ".h", ".sql", ".sh", ".ps1":
@@ -929,6 +1045,9 @@ func (s *Server) runQuery(c *gin.Context, req model.QueryRequest) (model.QueryRe
 		}
 		response.Answer = answer
 	}
+	if err := s.Store.RecordQueryEvidence(operationContext(c), response.RequestID, response.Evidence); err != nil {
+		return response, err
+	}
 	_ = s.Store.AddAudit(operationContext(c), actorName(c), "query_completed", response.RequestID, map[string]any{"responseMode": req.ResponseMode, "providerId": req.ProviderID, "evidenceCount": len(response.Evidence), "degraded": response.Degraded})
 	return response, nil
 }
@@ -1061,6 +1180,15 @@ func (s *Server) feedback(c *gin.Context) {
 	if _, ok := s.authorizeLibraries(c, []string{libraryID}); !ok {
 		return
 	}
+	associated, err := s.Store.QueryEvidenceContains(operationContext(c), input.RequestID, input.ChunkID)
+	if err != nil {
+		s.problem(c, http.StatusInternalServerError, "feedback_check_failed", err.Error(), true)
+		return
+	}
+	if !associated {
+		s.problem(c, http.StatusBadRequest, "invalid_feedback", "chunkId was not returned for requestId", false)
+		return
+	}
 	if len(input.Note) > 1000 {
 		input.Note = input.Note[:1000]
 	}
@@ -1093,10 +1221,29 @@ func (s *Server) createToken(c *gin.Context) {
 		return
 	}
 	for _, scope := range input.Scopes {
-		if scope != "query" && scope != "feedback" {
-			s.problem(c, 400, "invalid_scope", "Only query and feedback scopes are supported", false)
+		if scope != "query" && scope != "feedback" && scope != "submit" {
+			s.problem(c, 400, "invalid_scope", "Only query, feedback, and submit scopes are supported", false)
 			return
 		}
+	}
+	if contains(input.Scopes, "submit") && len(input.LibraryIDs) == 0 {
+		s.problem(c, 400, "submit_library_required", "submit tokens must be bound to at least one library", false)
+		return
+	}
+	for index, libraryID := range input.LibraryIDs {
+		input.LibraryIDs[index] = strings.TrimSpace(libraryID)
+		if input.LibraryIDs[index] == "" {
+			s.problem(c, 400, "invalid_token", "libraryIds must contain non-empty IDs", false)
+			return
+		}
+	}
+	if err := s.Store.ValidateLibraryIDs(operationContext(c), input.LibraryIDs); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.problem(c, 400, "invalid_token", "One or more libraryIds do not exist", false)
+			return
+		}
+		s.problem(c, 500, "token_create_failed", err.Error(), true)
+		return
 	}
 	secret, err := randomToken()
 	if err != nil {

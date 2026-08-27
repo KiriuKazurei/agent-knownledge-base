@@ -251,3 +251,81 @@ func (s *Store) ChunksForLibrary(ctx context.Context, libraryID string) ([]model
 	}
 	return items, rows.Err()
 }
+func (s *Store) FindDocumentBySourcePath(ctx context.Context, libraryID, sourcePath string) (model.Document, error) {
+	row := s.DB.QueryRowContext(ctx, "SELECT id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at FROM documents WHERE library_id=? AND source_path=? LIMIT 1", libraryID, sourcePath)
+	return scanDocument(row)
+}
+
+func (s *Store) ListDocumentsWithSources(ctx context.Context, libraryID string) ([]model.Document, error) {
+	return s.ListDocumentsFiltered(ctx, libraryID, "", false)
+}
+
+func (s *Store) MarkDocumentSourceMissing(ctx context.Context, id string) error {
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET status='source_missing',error='Source file is missing',updated_at=? WHERE id=? AND source_path<>''`, stamp, id)
+	if err != nil {
+		return err
+	}
+	count, _ := result.RowsAffected()
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) ValidateLibraryIDs(ctx context.Context, ids []string) error {
+	unique := map[string]bool{}
+	values := []string{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" && !unique[id] {
+			unique[id] = true
+			values = append(values, id)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	args := make([]any, len(values))
+	for i, id := range values {
+		args[i] = id
+	}
+	query := `SELECT COUNT(*) FROM libraries WHERE id IN (` + strings.TrimRight(strings.Repeat("?,", len(values)), ",") + `)`
+	var found int
+	if err := s.DB.QueryRowContext(ctx, query, args...).Scan(&found); err != nil {
+		return err
+	}
+	if found != len(values) {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) SkillAccessibleToLibraries(ctx context.Context, skillID string, libraryIDs []string) (bool, error) {
+	if len(libraryIDs) == 0 {
+		return true, nil
+	}
+	args := make([]any, 0, len(libraryIDs)+3)
+	args = append(args, skillID, "skill_uses_library", "library_requires_skill")
+	for _, id := range libraryIDs {
+		args = append(args, id)
+	}
+	query := `SELECT COUNT(*) FROM skill_library_links WHERE skill_id=? AND relation IN (?,?) AND library_id IN (` + strings.TrimRight(strings.Repeat("?,", len(libraryIDs)), ",") + `)`
+	var count int
+	if err := s.DB.QueryRowContext(ctx, query, args...).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+func (s *Store) UpdateDocumentSourcePath(ctx context.Context, id, sourcePath string) error {
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET source_path=?,status='ready',error='',updated_at=? WHERE id=?`, sourcePath, stamp, id)
+	if err != nil {
+		return err
+	}
+	count, _ := result.RowsAffected()
+	if count == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}

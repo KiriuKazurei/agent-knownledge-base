@@ -39,3 +39,7 @@ Performance is measured after warm-up and excludes remote generation latency. Th
 - 文档详情读取和同哈希重复导入现在会自动重新解析并替换历史错误分块。
 - 回归测试覆盖“旧分块 -> 中文源文件 -> 中文预览和数据库恢复”；API 全量测试、go vet、Worker 7/7、桌面 5/5 均通过。
 - 使用 Electron 同一数据目录实测 README.zh.md 返回 3 个中文预览分块且不含 U+FFFD；可见窗口句柄 `1836862`，API `worker=ok`，stderr 为空。
+
+## 阶段三/四严格验收（2026-08-27）
+
+阶段三、四已完成核心链路复验并修复多项失败静默、权限归属和桌面旧服务问题，但严格验收尚未完全通过。问题清单与后续修复顺序见：[阶段三/四严格验收与修复清单](ACCEPTANCE_PHASE3_4_2026-08-27.md)。

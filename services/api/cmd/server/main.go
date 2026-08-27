@@ -59,6 +59,9 @@ func run() error {
 		}
 	}
 	api := httpapi.New(cfg, store, workerClient, logger)
+	if err := api.ResumeQueuedJobs(rootCtx); err != nil {
+		logger.Error("queued job recovery failed", "error", err)
+	}
 	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: api.Router(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)

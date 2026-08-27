@@ -455,6 +455,120 @@ paths:
                 note: {type: string, maxLength: 1000}
       responses:
         '204': {description: Recorded}
+  /knowledge-submissions/prepare:
+    post:
+      operationId: prepareKnowledgeSubmission
+      parameters:
+        - in: query
+          name: libraryId
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200':
+          description: One-time submission ticket and formatter Skill protocol
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SubmissionPreparation'}
+  /knowledge-submissions:
+    get:
+      operationId: listKnowledgeSubmissions
+      parameters:
+        - in: query
+          name: libraryId
+          schema: {type: string, format: uuid}
+        - in: query
+          name: status
+          schema: {type: string, enum: [pending_review, reviewing, approved_pending_index, published, rejected]}
+      responses:
+        '200':
+          description: Knowledge submissions visible to the current identity
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/KnowledgeSubmission'}}
+    post:
+      operationId: submitKnowledgeSubmission
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/KnowledgeSubmissionRequest'}
+      responses:
+        '201':
+          description: Submission accepted into the pending review state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
+        '200':
+          description: Idempotent replay of an existing submission
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
+  /knowledge-submissions/{submissionId}:
+    parameters:
+      - in: path
+        name: submissionId
+        required: true
+        schema: {type: string, format: uuid}
+    get:
+      operationId: getKnowledgeSubmission
+      responses:
+        '200':
+          description: Submission detail including normalized Markdown and review history
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
+  /knowledge-submissions/{submissionId}/approve:
+    post:
+      operationId: approveKnowledgeSubmission
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReviewDecisionRequest'}
+      responses:
+        '202':
+          description: Approved and queued for formal index publication
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+  /knowledge-submissions/{submissionId}/reject:
+    post:
+      operationId: rejectKnowledgeSubmission
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReviewDecisionRequest'}
+      responses:
+        '200':
+          description: Submission rejected and retained as an immutable revision
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
+  /knowledge-submissions/{submissionId}/retry-review:
+    post:
+      operationId: retryKnowledgeSubmissionReview
+      parameters:
+        - in: path
+          name: submissionId
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '202':
+          description: Review or failed publication was queued again
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Job'}
+
   /tokens:
     get:
       operationId: listTokens
@@ -475,7 +589,7 @@ paths:
               required: [name, scopes]
               properties:
                 name: {type: string}
-                scopes: {type: array, items: {enum: [query, feedback]}}
+                scopes: {type: array, items: {enum: [query, feedback, submit]}}
                 libraryIds: {type: array, items: {type: string, format: uuid}}
       responses:
         '201':
@@ -557,12 +671,14 @@ components:
         worker: {type: string}
     Library:
       type: object
-      required: [id, name, allowRemoteModels, createdAt, updatedAt]
+      required: [id, name, allowRemoteModels, autoReviewAgentSubmissions, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
         description: {type: string}
         allowRemoteModels: {type: boolean}
+        autoReviewAgentSubmissions: {type: boolean}
+        reviewProviderId: {type: string, format: uuid}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
     CreateLibraryRequest:
@@ -577,6 +693,8 @@ components:
         name: {type: string, minLength: 1, maxLength: 120}
         description: {type: string, maxLength: 1000}
         allowRemoteModels: {type: boolean}
+        autoReviewAgentSubmissions: {type: boolean}
+        reviewProviderId: {type: string, format: uuid}
     Document:
       type: object
       required: [id, libraryId, title, mediaType, status, favorite, createdAt, updatedAt]
@@ -589,7 +707,7 @@ components:
         sourceUrl: {type: string, format: uri}
         objectPath: {type: string}
         contentHash: {type: string}
-        status: {enum: [pending, ready, failed, source_missing]}
+        status: {enum: [pending, pending_review, approved_pending_index, rejected, ready, failed, source_missing]}
         error: {type: string}
         tags: {type: array, items: {type: string}}
         favorite: {type: boolean}
@@ -659,6 +777,7 @@ components:
         contentHash: {type: string}
         status: {enum: [ready, failed, invalid]}
         error: {type: string}
+        systemRole: {type: string}
         fileCount: {type: integer, minimum: 0}
         usesLibraryIds: {type: array, items: {type: string, format: uuid}}
         requiresLibraryIds: {type: array, items: {type: string, format: uuid}}
@@ -784,6 +903,80 @@ components:
         message: {type: string}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    SubmissionPreparation:
+      type: object
+      required: [ticket, expiresAt, formatter, constraints]
+      properties:
+        ticket: {type: string}
+        expiresAt: {type: string, format: date-time}
+        formatter: {$ref: '#/components/schemas/SubmissionFormatter'}
+        constraints: {$ref: '#/components/schemas/SubmissionConstraints'}
+    SubmissionFormatter:
+      type: object
+      required: [id, name, description, contentHash, content, files]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: string}
+        contentHash: {type: string}
+        content: {type: string}
+        files: {type: array, items: {type: string}}
+    SubmissionConstraints:
+      type: object
+      required: [maxBytes, requiredFrontmatter, requiredSections]
+      properties:
+        maxBytes: {type: integer, minimum: 1}
+        requiredFrontmatter: {type: array, items: {type: string}}
+        requiredSections: {type: array, items: {type: string}}
+    KnowledgeSubmissionRequest:
+      type: object
+      required: [libraryId, ticket, clientSubmissionId, markdown]
+      properties:
+        libraryId: {type: string, format: uuid}
+        ticket: {type: string}
+        clientSubmissionId: {type: string, minLength: 1, maxLength: 200}
+        markdown: {type: string, minLength: 1, maxLength: 1048576}
+        supersedesSubmissionId: {type: string, format: uuid}
+    ReviewDecisionRequest:
+      type: object
+      properties:
+        reason: {type: string, maxLength: 2000}
+    ReviewRecord:
+      type: object
+      required: [id, reviewerType, reviewer, decision, reason, issues, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        reviewerType: {type: string, enum: [human, model]}
+        reviewer: {type: string}
+        decision: {type: string, enum: [approve, reject, needs_human]}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        reason: {type: string}
+        issues: {type: array, items: {type: string}}
+        createdAt: {type: string, format: date-time}
+    KnowledgeSubmission:
+      type: object
+      required: [id, documentId, libraryId, title, contentHash, status, reviewStatus, formatterSkillId, formatterSkillHash, submittedAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        documentId: {type: string, format: uuid}
+        libraryId: {type: string, format: uuid}
+        title: {type: string}
+        summary: {type: string}
+        tags: {type: array, items: {type: string}}
+        provenance: {type: object, additionalProperties: true}
+        contentHash: {type: string}
+        status: {enum: [pending_review, approved_pending_index, rejected, ready, failed]}
+        reviewStatus: {enum: [pending_review, reviewing, approved_pending_index, published, rejected]}
+        formatterSkillId: {type: string, format: uuid}
+        formatterSkillHash: {type: string}
+        supersedesSubmissionId: {type: string, format: uuid}
+        reviewJobId: {type: string, format: uuid}
+        reviewError: {type: string}
+        submittedAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        markdown: {type: string}
+        document: {$ref: '#/components/schemas/Document'}
+        reviews: {type: array, items: {$ref: '#/components/schemas/ReviewRecord'}}
     AgentToken:
       type: object
       required: [id, name, scopes, createdAt]

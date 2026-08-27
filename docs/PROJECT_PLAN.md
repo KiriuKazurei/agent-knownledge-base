@@ -213,3 +213,56 @@ Electron React ───────┐
 - 同哈希重复导入也会触发相同修复；新增 API 回归测试验证中文预览和持久化分块均恢复。
 - 同一 Electron 数据目录实测 `README.zh.md` 返回正常中文预览，3 个分块均不含 U+FFFD。
 - 阶段3/4 当前验证：API `go test ./...`、`go vet ./...`、Worker 7/7、桌面 TypeScript、Vitest 5/5、Electron 构建均通过。
+
+## 2026-08-26 阶段二基本完成补强记录
+
+本节为当前状态的最新补充；与上方历史阶段标题冲突时，以本节和 [阶段二审校文档](REVIEW_2026-08-26_PHASE2.md) 为准。
+
+- 文件导入任务和源目录扫描子任务现在保存可回放的 `libraryId`、源文件 `path` 等 payload。
+- API 启动时恢复 `file_import`、`url_import`、`skill_import`、`source_scan` 和 `index_rebuild`；损坏 payload 或未知任务只会单独失败。
+- 新增重启回归测试，验证运行中任务经数据库重开后可恢复为 queued，最终文档状态为 ready 且存在分块。
+- 阶段2现判定为“基本完成”；Recall@10、检索 p95、全任务崩溃矩阵和当前变更后的可见窗口复验仍是严格完成前置条件。
+- 后续优先级：先完成阶段二性能/故障/可见交互验收，再推进阶段三持续监视与备份恢复、阶段五安装包与迁移，以及 Skill 外部映射实现。
+
+## 2026-08-27 阶段二质量收口：检索、恢复与中文解析
+
+本节补充当前阶段二的最新证据；阶段二维持“基本完成”，尚不改写为“严格完成”。
+
+- 固定双语检索评测已落盘：18 个文档、10 个查询、每种模式预热 10 次后执行 1000 次查询。lexical、vector 和 hybrid 的 Recall@10 均为 1.00；p95 分别为 1.1432 ms、1.1189 ms、1.1285 ms。结果明确标记为 referenceScale=false，不能替代百万分块或真实 LanceDB 查询 SLA。
+- 重启恢复矩阵已使用真实 SQLite data root 与真实 Worker 覆盖 url_import、skill_import、source_scan、index_rebuild；所有目标任务完成，URL 与来源监视文档为 ready、Skill 可读取、来源扫描状态已持久化。损坏 payload 与未知任务类型会单独失败并保留诊断信息。
+- 中文解析优先保证不产生乱码：Worker 按 BOM、显式 HTML charset、严格 UTF-8、UTF-16/GB18030/Big5 等候选的顺序处理；无 BOM UTF-16、GB18030 CSV、声明 GBK 的 HTML 均已做 Unicode 等值回归。API 在 Worker 不可用时使用同样的 UTF-8/UTF-16/GB18030/Big5 安全解码，不再直接把原始字节转换为字符串。
+- 文件兼容范围新增 CSV、TSV、RST、LOG、INI、CONF 和 PROPERTIES；text/html 改为优先走结构化 HTML 提取，避免被通用 text/* 分支吞掉。
+- 严格完成剩余前置条件：百万分块/目标硬件的 p95 与容量证据、真实 LanceDB 查询质量对比，以及本轮变更后的 Electron 可见窗口与人工导入/查询/预览验收。
+
+## 2026-08-27 阶段二严格验收结论
+
+- 新增 `benchmark_retrieval.py --stress-chunks`，用固定双语夹具复制到指定 chunk 数并一次性重建索引，压测脚本与结果分别位于 `services/worker/benchmarks/benchmark_retrieval.py`、`docs/PHASE2_RETRIEVAL_STRESS_2026-08-27.json`。
+- 100,000 chunks 的 portable-json 结果为 Recall@10 1.00；hybrid p95 3582.91 ms，lexical/vector p95 分别为 3558.78/3509.56 ms，超过计划中的 2 秒参考线，且未达到 1,000,000 chunks 目标规模。
+- 当前环境为 Python 3.7.8，Python 3.14 未安装，LanceDB 不可导入；因此本轮只证明 portable fallback 的行为与瓶颈，不宣称真实 LanceDB 查询或百万分块 SLA 已通过。
+- 阶段二严格验收项中的固定双语 Recall@10、恢复矩阵和中文无乱码已通过；百万分块性能、真实 LanceDB 对比、当前变更后的 Electron 可见人工流程仍未验收。
+- 判定维持：阶段二“基本完成”，严格完成“未通过/待补证”。下一步先准备 Python 3.14 + LanceDB 的可复现环境和百万分块压测，再进行最新构建的窗口级导入、查询、预览、引用全流程验收。
+
+## 2026-08-27 当前构建可见流程复核
+
+- 最新 `apps/desktop/out` 启动成功，Electron 窗口标题为 Knowledge Agent Hub，窗口句柄非零（`8917360`），并输出 `KAH_RENDERER_READY`；真实 DOM 根节点与 `window.kah` 均存在。
+- 同一桌面运行时完成 `PROJECT_PLAN.md` 导入：任务 completed、文档 ready；刷新后页面显示 1 个项目。
+- 页面输入中文查询“中文乱码”并点击搜索，显示 20 条证据，存在证据反馈入口，查询为 `degraded=false`；点击结果后文档预览显示中文且未发现 U+FFFD。
+- 该流程证明当前构建的渲染器/API、查询和预览链路；原生文件选择器人工导入尚未执行，故仍保留该项验收边界。
+
+## 2026-08-27 阶段三/四并行收口复核
+
+- 阶段三已补强来源修改、改名、删除后的状态与索引同步、文本编辑失败可见化；阶段四已补强受限 Agent 的 Skill 查询、Manifest 和文件读取边界，并新增回归测试。
+- 保存搜索的非必要库 ID 前置校验曾造成既有生命周期测试失败，现已移除；文件夹、来源监视和 Agent 权限的真实库边界仍保留。
+- 修复后 `go test ./...` 与 `go vet ./...` 均通过，阶段三/四暂定“部分收口/基本能力可用”。
+- 后续仍需真实外部 Provider、桌面端回答流、人工 SSE 流程和备份恢复演练；这些工作不替代阶段二百万分块性能、真实 LanceDB 和人工文件选择器硬门槛。
+
+### 最终重启窗口复核
+
+- 全部代码修复后重新启动最新 Electron 构建，窗口句柄为非零值 `57019152`；页面显示已导入的 1 个项目，`window.kah` 存在且页面中文正常。
+- 最终实例再次完成中文查询和结果点击，显示 20 条证据并进入预览；原生文件选择器人工操作仍未完成。
+
+## 阶段三/四严格验收与修复清单（2026-08-27）
+
+阶段三、四当前为“部分收口，严格验收未完全通过”：核心导入、来源变更、权限边界、反馈归属、任务恢复与失败回传已有自动化证据；持续来源监听、Provider 真流式、中文 Office/PDF 实文件、人工桌面流程和备份恢复仍需完成。
+
+详细问题分级、验收证据、修复顺序与门槛见：[阶段三/四严格验收与修复清单](ACCEPTANCE_PHASE3_4_2026-08-27.md)。

@@ -29,6 +29,15 @@ type Store struct {
 	DataRoot string
 }
 
+// QueuedJob is the internal form used by the startup recovery loop. The
+// payload is deliberately not part of model.Job so that file paths and other
+// replay details are never returned by the public jobs endpoint.
+type QueuedJob struct {
+	model.Job
+	Payload      map[string]any
+	PayloadError error
+}
+
 func Open(dataRoot string) (*Store, error) {
 	for _, name := range []string{"objects", "indexes", "logs", "backups", "staging", "skills"} {
 		if err := os.MkdirAll(filepath.Join(dataRoot, name), 0o750); err != nil {
@@ -56,7 +65,8 @@ func (s *Store) migrate() error {
 		`PRAGMA foreign_keys=ON`,
 		`CREATE TABLE IF NOT EXISTS libraries (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-			allow_remote_models INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+			allow_remote_models INTEGER NOT NULL DEFAULT 0, auto_review_agent_submissions INTEGER NOT NULL DEFAULT 0,
+			review_provider_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS documents (
 			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -124,7 +134,41 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY, request_id TEXT NOT NULL, chunk_id TEXT NOT NULL, relevant INTEGER NOT NULL,
 			note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS audit_log (
+		`CREATE TABLE IF NOT EXISTS query_evidence (
+			request_id TEXT NOT NULL, chunk_id TEXT NOT NULL, created_at TEXT NOT NULL,
+			PRIMARY KEY(request_id, chunk_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS system_skills (
+			role TEXT PRIMARY KEY, skill_id TEXT NOT NULL UNIQUE REFERENCES skills(id) ON DELETE CASCADE,
+			content_hash TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_submissions (
+			id TEXT PRIMARY KEY, document_id TEXT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+			library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			submitted_by_token_id TEXT NOT NULL REFERENCES agent_tokens(id),
+			client_submission_id TEXT NOT NULL, formatter_skill_id TEXT NOT NULL,
+			formatter_skill_hash TEXT NOT NULL, supersedes_submission_id TEXT REFERENCES knowledge_submissions(id),
+			review_status TEXT NOT NULL, review_job_id TEXT NOT NULL DEFAULT '',
+			review_error TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
+			tags_json TEXT NOT NULL DEFAULT '[]', provenance_json TEXT NOT NULL DEFAULT '{}',
+			submitted_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			UNIQUE(submitted_by_token_id, client_submission_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_submissions_library_status ON knowledge_submissions(library_id, review_status, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS submission_tickets (
+			id TEXT PRIMARY KEY, ticket_hash TEXT NOT NULL UNIQUE,
+			token_id TEXT NOT NULL REFERENCES agent_tokens(id) ON DELETE CASCADE,
+			library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			formatter_skill_id TEXT NOT NULL, formatter_skill_hash TEXT NOT NULL,
+			expires_at TEXT NOT NULL, consumed_at TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_submission_tickets_expiry ON submission_tickets(expires_at)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_reviews (
+			id TEXT PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES knowledge_submissions(id) ON DELETE CASCADE,
+			reviewer_type TEXT NOT NULL, reviewer TEXT NOT NULL, decision TEXT NOT NULL,
+			confidence REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '',
+			issues_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
+		)`, `CREATE TABLE IF NOT EXISTS audit_log (
 			id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '',
 			details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 		)`,
@@ -143,6 +187,23 @@ func (s *Store) migrate() error {
 		}
 	} else if err != nil {
 		return fmt.Errorf("migration failed checking favorite: %w", err)
+	}
+	for _, column := range []struct {
+		name       string
+		definition string
+	}{
+		{"auto_review_agent_submissions", "INTEGER NOT NULL DEFAULT 0"},
+		{"review_provider_id", "TEXT NOT NULL DEFAULT ''"},
+	} {
+		var existing string
+		err := s.DB.QueryRow(`SELECT name FROM pragma_table_info('libraries') WHERE name=?`, column.name).Scan(&existing)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.DB.Exec(`ALTER TABLE libraries ADD COLUMN ` + column.name + ` ` + column.definition); err != nil {
+				return fmt.Errorf("migration failed adding libraries.%s: %w", column.name, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("migration failed checking libraries.%s: %w", column.name, err)
+		}
 	}
 	return nil
 }
@@ -165,7 +226,7 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) ListLibraries(ctx context.Context) ([]model.Library, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,description,allow_remote_models,created_at,updated_at FROM libraries ORDER BY lower(name)`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -173,12 +234,13 @@ func (s *Store) ListLibraries(ctx context.Context) ([]model.Library, error) {
 	items := []model.Library{}
 	for rows.Next() {
 		var item model.Library
-		var allow int
+		var allow, autoReview int
 		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &allow, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &allow, &autoReview, &item.ReviewProviderID, &created, &updated); err != nil {
 			return nil, err
 		}
 		item.AllowRemoteModels = allow == 1
+		item.AutoReviewAgentSubmissions = autoReview == 1
 		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
 		items = append(items, item)
 	}
@@ -191,19 +253,20 @@ func (s *Store) CreateLibrary(ctx context.Context, name, description string) (mo
 	}
 	t, stamp := now()
 	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), CreatedAt: t, UpdatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,allow_remote_models,created_at,updated_at) VALUES(?,?,?,?,?,?)`, item.ID, item.Name, item.Description, 0, stamp, stamp)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, 0, 0, "", stamp, stamp)
 	return item, err
 }
 
-func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description *string, allow *bool) (model.Library, error) {
+func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description *string, allow, autoReview *bool, reviewProviderID *string) (model.Library, error) {
 	var current model.Library
-	var allowInt int
+	var allowInt, autoReviewInt int
 	var created, updated string
-	err := s.DB.QueryRowContext(ctx, `SELECT id,name,description,allow_remote_models,created_at,updated_at FROM libraries WHERE id=?`, id).Scan(&current.ID, &current.Name, &current.Description, &allowInt, &created, &updated)
+	err := s.DB.QueryRowContext(ctx, `SELECT id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries WHERE id=?`, id).Scan(&current.ID, &current.Name, &current.Description, &allowInt, &autoReviewInt, &current.ReviewProviderID, &created, &updated)
 	if err != nil {
 		return current, err
 	}
 	current.AllowRemoteModels = allowInt == 1
+	current.AutoReviewAgentSubmissions = autoReviewInt == 1
 	current.CreatedAt = parseTime(created)
 	if name != nil && strings.TrimSpace(*name) != "" {
 		current.Name = strings.TrimSpace(*name)
@@ -214,8 +277,14 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description 
 	if allow != nil {
 		current.AllowRemoteModels = *allow
 	}
+	if autoReview != nil {
+		current.AutoReviewAgentSubmissions = *autoReview
+	}
+	if reviewProviderID != nil {
+		current.ReviewProviderID = strings.TrimSpace(*reviewProviderID)
+	}
 	current.UpdatedAt, updated = now()
-	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,allow_remote_models=?,updated_at=? WHERE id=?`, current.Name, current.Description, boolInt(current.AllowRemoteModels), updated, id)
+	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,allow_remote_models=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, boolInt(current.AllowRemoteModels), boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
 	return current, err
 }
 
@@ -731,6 +800,15 @@ func (s *Store) ImportSkill(ctx context.Context, source string, replace bool) (m
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return model.Skill{}, err
 	}
+	if existingID != "" {
+		systemSkill, systemErr := s.IsSystemSkill(ctx, existingID)
+		if systemErr != nil {
+			return model.Skill{}, systemErr
+		}
+		if systemSkill {
+			return model.Skill{}, ErrSystemSkillProtected
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 		return model.Skill{}, err
 	}
@@ -846,6 +924,11 @@ func (s *Store) hydrateSkill(ctx context.Context, item model.Skill) (model.Skill
 	if item.RequiresLibraryIDs == nil {
 		item.RequiresLibraryIDs = []string{}
 	}
+	systemRole, err := s.SystemSkillRole(ctx, item.ID)
+	if err != nil {
+		return item, err
+	}
+	item.SystemRole = systemRole
 	return item, nil
 }
 
@@ -972,7 +1055,14 @@ func (s *Store) DeleteSkill(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	result, err := s.DB.ExecContext(ctx, `DELETE FROM skills WHERE id=?`, id)
+	systemSkill, err := s.IsSystemSkill(ctx, id)
+	if err != nil {
+		return err
+	}
+	if systemSkill {
+		return ErrSystemSkillProtected
+	}
+	result, err := s.DB.ExecContext(ctx, "DELETE FROM skills WHERE id=?", id)
 	if err != nil {
 		return err
 	}
@@ -1108,10 +1198,13 @@ func (s *Store) Resolve(relative string) (string, error) {
 }
 
 func (s *Store) CreateJob(ctx context.Context, kind string, payload any) (model.Job, error) {
+	bytes, err := json.Marshal(payload)
+	if err != nil {
+		return model.Job{}, fmt.Errorf("marshal job payload: %w", err)
+	}
 	t, stamp := now()
-	bytes, _ := json.Marshal(payload)
 	job := model.Job{ID: uuid.NewString(), Kind: kind, Status: "queued", Progress: 0, CreatedAt: t, UpdatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO jobs(id,kind,status,progress,message,payload_json,created_at,updated_at) VALUES(?,?,'queued',0,'',?,?,?)`, job.ID, kind, string(bytes), stamp, stamp)
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO jobs(id,kind,status,progress,message,payload_json,created_at,updated_at) VALUES(?,?,'queued',0,'',?,?,?)`, job.ID, kind, string(bytes), stamp, stamp)
 	return job, err
 }
 
@@ -1388,6 +1481,36 @@ func (s *Store) AddFeedback(ctx context.Context, requestID, chunkID string, rele
 	return err
 }
 
+func (s *Store) RecordQueryEvidence(ctx context.Context, requestID string, evidence []model.Evidence) error {
+	if requestID == "" {
+		return errors.New("request ID is required")
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, stamp := now()
+	for _, item := range evidence {
+		if item.ID == "" {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO query_evidence(request_id,chunk_id,created_at) VALUES(?,?,?)`, requestID, item.ID, stamp); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) QueryEvidenceContains(ctx context.Context, requestID, chunkID string) (bool, error) {
+	var found int
+	err := s.DB.QueryRowContext(ctx, `SELECT 1 FROM query_evidence WHERE request_id=? AND chunk_id=?`, requestID, chunkID).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && found == 1, err
+}
+
 func (s *Store) ChunkLibrary(ctx context.Context, chunkID string) (string, error) {
 	var libraryID string
 	err := s.DB.QueryRowContext(ctx, `SELECT d.library_id FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=?`, chunkID).Scan(&libraryID)
@@ -1509,4 +1632,42 @@ func mustInfo(entry fs.DirEntry) fs.FileInfo {
 		panic(err)
 	}
 	return info
+}
+
+// ListQueuedJobs returns queued jobs with their private replay payloads.
+// Payload errors are kept on the individual item so one damaged job cannot
+// prevent the remaining queue from recovering.
+func (s *Store) ListQueuedJobs(ctx context.Context) ([]QueuedJob, error) {
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,kind,status,progress,message,payload_json,created_at,updated_at FROM jobs WHERE status='queued' ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []QueuedJob{}
+	for rows.Next() {
+		var item QueuedJob
+		var payload, created, updated string
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Progress, &item.Message, &payload, &created, &updated); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
+		item.Payload = map[string]any{}
+		if err := json.Unmarshal([]byte(payload), &item.Payload); err != nil {
+			item.PayloadError = fmt.Errorf("decode job payload: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// ClaimJob atomically moves one queued job to running. The row count makes
+// recovery idempotent when startup logic is invoked more than once.
+func (s *Store) ClaimJob(ctx context.Context, id string) (bool, error) {
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status='running',message='Resuming after restart',updated_at=? WHERE id=? AND status='queued'`, stamp, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
 }

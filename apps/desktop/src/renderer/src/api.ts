@@ -1,4 +1,4 @@
-import type { AgentToken, Document, DocumentDetail, Job, Library, Provider, QueryResponse, SavedSearch, Skill, SkillManifest, SkillQueryResponse, SourceWatch, VirtualFolder } from './types'
+import type { AgentToken, Document, DocumentDetail, Job, KnowledgeSubmission, Library, Provider, QueryResponse, SavedSearch, Skill, SkillManifest, SkillQueryResponse, SourceWatch, SubmissionPreparation, VirtualFolder } from './types'
 
 let runtime: RuntimeConfig | undefined
 export async function getRuntime(): Promise<RuntimeConfig> { runtime ??= await window.kah.runtimeConfig(); return runtime }
@@ -62,6 +62,13 @@ export const client = {
   createSavedSearch: (name: string, query: string, libraryIds: string[] = [], tags: string[] = []) => api<SavedSearch>('/saved-searches', { method: 'POST', body: JSON.stringify({ name, query, libraryIds, tags }) }),
   deleteSavedSearch: (id: string) => api<void>(`/saved-searches/${id}`, { method: 'DELETE' }),
   query: (query: string, libraryIds: string[], responseMode: 'evidence'|'answer' = 'evidence', providerId?: string) => api<QueryResponse>('/query', { method: 'POST', body: JSON.stringify({ query, libraryIds, topK: 20, retrievalMode: 'hybrid', responseMode, providerId }) }),
+  submissions: (libraryId?: string, status?: string) => api<KnowledgeSubmission[]>('/knowledge-submissions?' + new URLSearchParams({ ...(libraryId ? { libraryId } : {}), ...(status ? { status } : {}) }).toString()),
+  submission: (id: string) => api<KnowledgeSubmission>('/knowledge-submissions/' + encodeURIComponent(id)),
+  prepareSubmission: (libraryId: string) => api<SubmissionPreparation>('/knowledge-submissions/prepare?libraryId=' + encodeURIComponent(libraryId), { method: 'POST', body: JSON.stringify({ libraryId }) }),
+  submitSubmission: (input: { libraryId: string; ticket: string; clientSubmissionId: string; markdown: string; supersedesSubmissionId?: string }) => api<KnowledgeSubmission>('/knowledge-submissions', { method: 'POST', body: JSON.stringify(input) }),
+  approveSubmission: (id: string, reason = '') => api<Job>('/knowledge-submissions/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reason }) }),
+  rejectSubmission: (id: string, reason: string) => api<KnowledgeSubmission>('/knowledge-submissions/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reason }) }),
+  retrySubmissionReview: (id: string) => api<Job>('/knowledge-submissions/' + encodeURIComponent(id) + '/retry-review', { method: 'POST', body: '{}' }),
   feedback: (requestId: string, chunkId: string, relevant: boolean, note = '') => api<void>('/feedback', { method: 'POST', body: JSON.stringify({ requestId, chunkId, relevant, note }) }),
   providers: () => api<Provider[]>('/providers'),
   saveProvider: (provider: Provider) => api<Provider>('/providers', { method: 'POST', body: JSON.stringify(provider) }),

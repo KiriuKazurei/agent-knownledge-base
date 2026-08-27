@@ -1,0 +1,86 @@
+{
+  "fixture": "E:\\AI\\agent-knownledge-base\\services\\worker\\benchmarks\\retrieval_eval.json",
+  "libraryId": "phase2-eval",
+  "documentCount": 18,
+  "chunkCount": 18,
+  "queryCount": 10,
+  "topK": 10,
+  "iterations": 1,
+  "warmup": 0,
+  "backend": "portable-json",
+  "recallTarget": 0.8,
+  "referenceScale": false,
+  "modes": {
+    "lexical": {
+      "retrievalMode": "lexical",
+      "queryCount": 10,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5610000000000059,
+      "p95Ms": 0.5932999999999911,
+      "p99Ms": 0.5932999999999911,
+      "minMs": 0.4947999999999897,
+      "maxMs": 0.5932999999999911
+    },
+    "vector": {
+      "retrievalMode": "vector",
+      "queryCount": 10,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5312999999999846,
+      "p95Ms": 0.7028000000000034,
+      "p99Ms": 0.7028000000000034,
+      "minMs": 0.4795000000000216,
+      "maxMs": 0.7028000000000034
+    },
+    "hybrid": {
+      "retrievalMode": "hybrid",
+      "queryCount": 10,
+      "recallAtK": 1.0,
+      "p50Ms": 0.5333000000000143,
+      "p95Ms": 0.9925999999999824,
+      "p99Ms": 0.9925999999999824,
+      "minMs": 0.4745000000000166,
+      "maxMs": 0.9925999999999824
+    }
+  },
+  "stress": {
+    "backend": "portable-json",
+    "documentCount": 100000,
+    "chunkCount": 100000,
+    "queryCount": 10,
+    "iterations": 1,
+    "referenceTargetChunks": 1000000,
+    "referenceScale": false,
+    "modes": {
+      "lexical": {
+        "retrievalMode": "lexical",
+        "queryCount": 10,
+        "recallAtK": 1.0,
+        "p50Ms": 2919.7903000000024,
+        "p95Ms": 3558.783599999998,
+        "p99Ms": 3558.783599999998,
+        "minMs": 2668.514000000002,
+        "maxMs": 3558.783599999998
+      },
+      "vector": {
+        "retrievalMode": "vector",
+        "queryCount": 10,
+        "recallAtK": 1.0,
+        "p50Ms": 2867.4199000000017,
+        "p95Ms": 3509.56459999999,
+        "p99Ms": 3509.56459999999,
+        "minMs": 2457.867499999999,
+        "maxMs": 3509.56459999999
+      },
+      "hybrid": {
+        "retrievalMode": "hybrid",
+        "queryCount": 10,
+        "recallAtK": 1.0,
+        "p50Ms": 2880.951699999997,
+        "p95Ms": 3582.9087999999983,
+        "p99Ms": 3582.9087999999983,
+        "minMs": 2441.7536999999925,
+        "maxMs": 3582.9087999999983
+      }
+    }
+  }
+}
