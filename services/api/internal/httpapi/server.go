@@ -1117,42 +1117,81 @@ func (s *Server) queryStream(c *gin.Context) {
 	if !bind(c, &req) {
 		return
 	}
+	answerMode := req.ResponseMode == "answer"
+	requestedProviderID := req.ProviderID
+	req.ResponseMode = "evidence"
 	response, err := s.runQuery(c, req)
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	send := func(event string, data any) error {
+		payload, marshalErr := json.Marshal(data)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, writeErr := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, payload); writeErr != nil {
+			return writeErr
+		}
+		c.Writer.Flush()
+		return nil
+	}
 	if err != nil {
 		if c.IsAborted() {
 			return
 		}
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("X-Accel-Buffering", "no")
-		payload, _ := json.Marshal(gin.H{"code": "query_failed", "detail": err.Error()})
-		fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload)
-		c.Writer.Flush()
+		_ = send("error", gin.H{"code": "query_failed", "detail": err.Error()})
 		return
 	}
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("X-Accel-Buffering", "no")
-	send := func(event string, data any) {
-		bytes, _ := json.Marshal(data)
-		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, bytes)
-		c.Writer.Flush()
+	if err := send("retrieval", gin.H{"requestId": response.RequestID, "degraded": response.Degraded, "degradedReason": response.DegradedReason, "count": len(response.Evidence), "requiredSkills": response.RequiredSkills}); err != nil {
+		return
 	}
-	send("retrieval", gin.H{"requestId": response.RequestID, "degraded": response.Degraded, "degradedReason": response.DegradedReason, "count": len(response.Evidence), "requiredSkills": response.RequiredSkills})
 	for _, item := range response.Evidence {
-		send("citation", item)
-	}
-	if response.Answer != "" {
-		runes := []rune(response.Answer)
-		for start := 0; start < len(runes); start += 80 {
-			end := start + 80
-			if end > len(runes) {
-				end = len(runes)
-			}
-			send("answer_delta", gin.H{"text": string(runes[start:end])})
+		if err := send("citation", item); err != nil {
+			return
 		}
 	}
-	send("complete", gin.H{"requestId": response.RequestID})
+	if !answerMode {
+		_ = send("complete", gin.H{"requestId": response.RequestID})
+		return
+	}
+	if requestedProviderID == "" {
+		_ = send("error", gin.H{"code": "query_failed", "detail": "providerId is required for answer mode"})
+		return
+	}
+	provider, err := s.Store.GetProvider(operationContext(c), requestedProviderID)
+	if err != nil {
+		_ = send("error", gin.H{"code": "query_failed", "detail": err.Error()})
+		return
+	}
+	if !provider.Local {
+		actual := req.LibraryIDs
+		if len(actual) == 0 {
+			seen := map[string]bool{}
+			for _, item := range response.Evidence {
+				if !seen[item.LibraryID] {
+					actual = append(actual, item.LibraryID)
+					seen[item.LibraryID] = true
+				}
+			}
+		}
+		allowed, allowErr := s.Store.LibrariesAllowRemote(operationContext(c), actual)
+		if allowErr != nil || !allowed {
+			_ = send("error", gin.H{"code": "query_failed", "detail": "remote model access is not allowed for every selected library"})
+			return
+		}
+	}
+	key, err := secrets.Get("provider:" + provider.ID)
+	if err != nil {
+		_ = send("error", gin.H{"code": "query_failed", "detail": err.Error()})
+		return
+	}
+	if err := s.Providers.GenerateStream(operationContext(c), provider, key, req.Query, response.Evidence, func(delta string) error {
+		return send("answer_delta", gin.H{"text": delta})
+	}); err != nil {
+		_ = send("error", gin.H{"code": "query_failed", "detail": err.Error()})
+		return
+	}
+	_ = send("complete", gin.H{"requestId": response.RequestID})
 }
 func (s *Server) feedback(c *gin.Context) {
 	var input struct {

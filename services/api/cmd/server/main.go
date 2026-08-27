@@ -62,6 +62,7 @@ func run() error {
 	if err := api.ResumeQueuedJobs(rootCtx); err != nil {
 		logger.Error("queued job recovery failed", "error", err)
 	}
+	api.StartSourceWatchers(rootCtx)
 	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: api.Router(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -72,7 +73,11 @@ func run() error {
 		defer cancelShutdown()
 		_ = server.Shutdown(ctx)
 	}()
-	logger.Info("api listening", "address", server.Addr, "dataRoot", cfg.DataRoot, "worker", workerClient.State())
+	workerState := "unavailable"
+	if workerClient != nil {
+		workerState = workerClient.State()
+	}
+	logger.Info("api listening", "address", server.Addr, "dataRoot", cfg.DataRoot, "worker", workerState)
 	fmt.Printf("KAH_API_READY http://%s%s\n", server.Addr, "/api/v1")
 	err = server.ListenAndServe()
 	if workerClient != nil {

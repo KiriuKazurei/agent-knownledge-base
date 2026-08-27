@@ -136,9 +136,14 @@ def _text_blocks(path):
 def _pdf_blocks(path):
     from pypdf import PdfReader
     reader = PdfReader(str(path))
-    return [((page.extract_text() or "").strip(), {"kind": "pdf", "page": index + 1}) for index, page in enumerate(reader.pages)]
-
-
+    blocks = []
+    for index, page in enumerate(reader.pages):
+        text = (page.extract_text() or "").strip()
+        if "\ufffd" in text or "\x00" in text:
+            raise UnicodeError("PDF text extraction produced replacement characters")
+        if text:
+            blocks.append((text, {"kind": "pdf", "page": index + 1}))
+    return blocks
 def _docx_blocks(path):
     from docx import Document
     document = Document(str(path))
