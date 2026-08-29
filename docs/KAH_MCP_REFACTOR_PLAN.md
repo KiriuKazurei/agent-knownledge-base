@@ -1,7 +1,7 @@
 # KAH + MCP 重构方案（当前实施版）
 
 > 更新时间：2026-08-30
-> 状态：核心链路已落地，正在进行契约收口与发布前验收
+> 状态：核心链路与 Skill 外部映射已落地，正在进行契约收口与发布前验收
 
 ## 1. 重构目标
 
@@ -66,10 +66,10 @@ OpenAPI 只描述桌面管理接口：
 | --- | --- | --- |
 | KAH schema、revision、来源、关系 | 已实现 | storage 单元测试与 MCP 端到端用例 |
 | 精确/近似去重、幂等提交 | 已实现 | 同库/跨库和 cursor 回归 |
-| Read/Manage MCP、Origin、scope | 已实现 | `mcp_test.go`；需按目标 MCP client 做一次互操作验收 |
+| Read/Manage MCP、Origin、scope | 已实现 | `mcp_test.go` 与 2026-08-30 原始 HTTP MCP client 烟测；目标 MCP client 仍需互操作验收 |
 | 桌面审核并发布 | 已实现 | 审核回归；可见窗口人工流程仍待完成 |
 | Worker/LanceDB 文档检索 | 保持原链路 | 不把它伪装成 KAH 目录索引；需单独完成百万 chunks 性能门槛 |
-| 外部 Skill 目录映射 | 尚未纳入本轮 | 按 `SKILL_MAPPING_PLAN.md` 后续实施 |
+| 外部 Skill 目录映射 | 已实现 | 自动化测试与 2026-08-30 临时外部目录真实 HTTP/文件系统验收通过；可见窗口人工流程仍待完成 |
 | 安装包、真实 Provider、可见窗口 | 尚未严格验收 | 属于发布前门槛，不由 MCP 自动化测试替代 |
 
 ## 6. 验收命令

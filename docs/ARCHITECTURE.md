@@ -22,7 +22,7 @@ KAH knowledge is a separate structured directory backed by immutable SQLite revi
 
 Global Skills are stored as managed folders under `skills/<name>/` in the data root. Each folder contains a canonical `SKILL.md` entrypoint and may contain scripts, references, assets, or other read-only resources. The API validates and atomically imports one Markdown Skill or one zip package without executing its contents.
 
-Agent Skill protocol guidance is exposed as MCP resources (`kah://skill/read/v1` and `kah://skill/manage/v1`). The desktop manifest endpoint still returns the complete `SKILL.md` plus a relative file manifest; additional files are fetched through a path-confined read-only endpoint. External directory mapping remains a separate, desktop-only follow-up described in `SKILL_MAPPING_PLAN.md`.
+Agent Skill protocol guidance is exposed as MCP resources (`kah://skill/read/v1` and `kah://skill/manage/v1`). The desktop manifest endpoint still returns the complete `SKILL.md` plus a relative file manifest; additional files are fetched through a path-confined read-only endpoint. External directory mapping is a separate, desktop-only capability described in `SKILL_MAPPING_PLAN.md`; it creates only user-authorized Windows directory symlinks.
 
 SQLite stores Skill metadata, per-file hashes, and the two library relations `skill_uses_library` and `library_requires_skill`. Skills are included automatically in data-root backups, while the worker document index does not index Skill instructions.
 

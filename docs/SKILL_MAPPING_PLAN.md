@@ -1,6 +1,6 @@
 # Skill 外部 Agent/项目映射计划
 
-> 状态：后端、桌面 API 与 React 工作台已实现；真实外部 Agent 目录的手工验收待执行
+> 状态：后端、桌面 API、React 工作台与真实外部目录验收已完成；Electron 可见窗口人工验收仍待运行时环境
 > 适用范围：Windows 10/11 x64、本地桌面会话、全局 Skill 管理
 
 ## 1. 目标与现状
@@ -88,6 +88,7 @@ V1 由用户直接选择 Skills 目录，不自动猜测 Agent 目录约定，�
 - 只要 Skill 仍有映射记录，删除 Skill 返回冲突；用户必须先解除或遗忘全部映射。
 - 备份包含映射目标和映射项的 SQLite 元数据，但不打包外部目录，也不复制外部软链接。
 - 备份恢复后，外部路径标记为未验证；系统不自动写入外部目录，用户必须显式执行验证或修复。
+- 当前 API 已验证备份包包含 `knowledge.db` 与知识库内 Skill 内容，且不包含外部 Skills 目录；恢复接口和恢复后迁移演练仍属于发布前待办，不能把备份创建证据当作恢复完成。
 
 ## 5. 数据库设计
 
@@ -174,7 +175,7 @@ Electron 主进程新增目录选择器 IPC，返回用户选择的既有目录�
 3. 实现桌面 API、审计记录、OpenAPI 契约和删除 Skill 的映射保护。已完成。
 4. 增加 Electron 目录选择 IPC 和 React API 类型。已完成。
 5. 在 Skills 工作台加入外部映射视图和错误/加载/空状态。已完成。
-6. 增加自动化测试，再进行真实外部 Skills 目录手工验收。自动化测试已完成；真实外部目录手工验收待执行。
+6. 增加自动化测试，再进行真实外部 Skills 目录手工验收。自动化测试与隔离真实目录验收已完成；Electron 可见窗口人工验收仍待执行。
 
 ## 9. 测试与验收
 
@@ -196,6 +197,15 @@ Electron 主进程新增目录选择器 IPC，返回用户选择的既有目录�
 - 在临时外部 Agent/项目 Skills 目录中确认其他 Agent 能直接读取 `SKILL.md`、`references`、`scripts` 和 `assets`。
 - 替换知识库中的 Skill 后，外部软链接仍能读取新内容。
 - 备份恢复后不自动修改外部目录，显式验证后才能恢复为可用状态。
+
+### 9.1 2026-08-30 隔离真实目录验收
+
+- 使用当前源码构建的 API、桌面 token 和临时 Skill 压缩包完成真实 HTTP 流程：导入 Skill、创建 `agent` 映射目标、创建 Windows 真实目录符号链接并通过 `Readlink`/PowerShell `LinkType=SymbolicLink` 确认目标指向知识库 `dataRoot/skills/<skill-name>`。
+- 外部 Agent 目录可直接读取 `SKILL.md`、`references/guide.md`、`scripts/check.ps1` 和 `assets/marker.txt`；API manifest 同时返回四类文件。
+- `replace=true` 替换知识库 Skill 后，外部链接类型和目标路径保持不变；重新验证结果为 `ready`。
+- 将链接替换为普通外部目录后，验证结果为 `conflict`；“遗忘记录”返回成功且保留该外部目录，数据库映射记录归零，证明不会删除未知对象。
+- 创建备份返回 `201`，归档包含 `data/knowledge.db` 和知识库 Skill 文件，不包含外部 Agent 目录。当前实现没有恢复 API，因此恢复后的自动不写入与显式验证流程仍未完成。
+- 目录选择器、React 工作台键盘操作和可见窗口人工验收未能在本轮完成：pnpm 依赖恢复后 Electron runtime 下载因 `ECONNRESET` 失败；已有类型检查、Vitest 和 `electron-vite build` 证据仍有效，但不替代可见窗口证据。
 
 ## 10. 非目标与默认假设
 

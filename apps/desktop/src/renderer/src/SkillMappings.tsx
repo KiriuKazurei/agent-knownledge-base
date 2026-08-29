@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CircleAlert, FolderSearch2, Link2, LoaderCircle, Plus, RefreshCw, Trash2, Wrench, X } from 'lucide-react'
 import { client } from './api'
@@ -21,6 +21,7 @@ export function SkillMappingsWorkspace({ skills, selectedTargetId, onTargetSelec
   const [directoryPath, setDirectoryPath] = useState('')
   const [skillIds, setSkillIds] = useState<string[]>([])
   const [directoryError, setDirectoryError] = useState('')
+  const formErrorRef = useRef<HTMLDivElement>(null)
   const create = useMutation({
     mutationFn: () => {
       if (!name.trim()) throw new Error('请填写映射目标名称')
@@ -36,9 +37,13 @@ export function SkillMappingsWorkspace({ skills, selectedTargetId, onTargetSelec
       onTargetSelect(target.id)
     }
   })
+  const formError = directoryError || (create.error as Error | null)?.message || ''
   useEffect(() => {
     if (!selectedTargetId && targets.data?.[0]) onTargetSelect(targets.data[0].id)
   }, [selectedTargetId, targets.data, onTargetSelect])
+  useEffect(() => {
+    if (formOpen && formError) formErrorRef.current?.focus()
+  }, [formOpen, formError])
 
   async function chooseDirectory() {
     setDirectoryError('')
@@ -64,7 +69,7 @@ export function SkillMappingsWorkspace({ skills, selectedTargetId, onTargetSelec
         <label className="span-2" htmlFor="mapping-directory">Skills 目录<input id="mapping-directory" value={directoryPath} readOnly placeholder="请选择一个已存在的绝对路径"/><button type="button" className="button secondary mapping-directory-button" onClick={() => void chooseDirectory()}><FolderSearch2 size={16}/>选择目录</button></label>
       </div>
       <fieldset className="mapping-skill-picker"><legend>要映射的 Skill（可选）</legend>{skills.length ? skills.map((skill) => <label className="switch-row" key={skill.id}><span><strong>{skill.name}</strong><small>{skill.description}</small></span><input type="checkbox" checked={skillIds.includes(skill.id)} onChange={() => toggleSkill(skill.id)} /></label>) : <p className="muted">请先安装至少一个 Skill。</p>}</fieldset>
-      {(directoryError || create.error) && <div role="alert" className="inline-error"><CircleAlert size={17}/>{directoryError || (create.error as Error).message}</div>}
+      {formError && <div ref={formErrorRef} tabIndex={-1} role="alert" className="inline-error"><CircleAlert size={17}/>{formError}</div>}
       <div className="preview-actions"><button type="submit" className="button primary" disabled={create.isPending || !directoryPath}><Link2 size={16}/>{create.isPending ? '正在创建链接…' : '创建映射'}</button><button type="button" className="button ghost" onClick={() => setFormOpen(false)}>取消</button></div>
     </form>}
     <div className="content-heading"><div><h2>外部映射目标</h2><span>{targets.data?.length ?? 0} 个目标</span></div><button className="button secondary" onClick={() => setFormOpen(true)}><Plus size={16}/>新建映射</button></div>
