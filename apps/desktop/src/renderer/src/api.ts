@@ -1,4 +1,4 @@
-import type { AgentToken, Document, DocumentDetail, Job, KnowledgeSubmission, Library, Provider, QueryResponse, SavedSearch, Skill, SkillManifest, SkillQueryResponse, SourceWatch, SubmissionPreparation, VirtualFolder } from './types'
+import type { AgentToken, Document, DocumentDetail, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SourceWatch, VirtualFolder } from './types'
 
 let runtime: RuntimeConfig | undefined
 export async function getRuntime(): Promise<RuntimeConfig> { runtime ??= await window.kah.runtimeConfig(); return runtime }
@@ -48,7 +48,6 @@ export const client = {
   updateSkillLinks: (id: string, usesLibraryIds: string[], requiresLibraryIds: string[]) => api<Skill>(`/skills/${id}/links`, { method: 'PUT', body: JSON.stringify({ usesLibraryIds, requiresLibraryIds }) }),
   deleteSkill: (id: string) => api<void>(`/skills/${id}`, { method: 'DELETE' }),
   skillManifest: (id: string) => api<SkillManifest>(`/skills/${id}/manifest`),
-  skillQuery: (query: string, libraryIds: string[] = []) => api<SkillQueryResponse>('/skills/query', { method: 'POST', body: JSON.stringify({ query, libraryIds, topK: 20 }) }),
   jobs: () => api<Job[]>('/jobs'),
   savedSearches: () => api<SavedSearch[]>('/saved-searches'),
   folders: (libraryId: string) => api<VirtualFolder[]>(`/folders?libraryId=${encodeURIComponent(libraryId)}`),
@@ -61,15 +60,12 @@ export const client = {
   deleteWatch: (id: string) => api<void>(`/sources/watches/${id}`, { method: 'DELETE' }),
   createSavedSearch: (name: string, query: string, libraryIds: string[] = [], tags: string[] = []) => api<SavedSearch>('/saved-searches', { method: 'POST', body: JSON.stringify({ name, query, libraryIds, tags }) }),
   deleteSavedSearch: (id: string) => api<void>(`/saved-searches/${id}`, { method: 'DELETE' }),
-  query: (query: string, libraryIds: string[], responseMode: 'evidence'|'answer' = 'evidence', providerId?: string) => api<QueryResponse>('/query', { method: 'POST', body: JSON.stringify({ query, libraryIds, topK: 20, retrievalMode: 'hybrid', responseMode, providerId }) }),
-  submissions: (libraryId?: string, status?: string) => api<KnowledgeSubmission[]>('/knowledge-submissions?' + new URLSearchParams({ ...(libraryId ? { libraryId } : {}), ...(status ? { status } : {}) }).toString()),
-  submission: (id: string) => api<KnowledgeSubmission>('/knowledge-submissions/' + encodeURIComponent(id)),
-  prepareSubmission: (libraryId: string) => api<SubmissionPreparation>('/knowledge-submissions/prepare?libraryId=' + encodeURIComponent(libraryId), { method: 'POST', body: JSON.stringify({ libraryId }) }),
-  submitSubmission: (input: { libraryId: string; ticket: string; clientSubmissionId: string; markdown: string; supersedesSubmissionId?: string }) => api<KnowledgeSubmission>('/knowledge-submissions', { method: 'POST', body: JSON.stringify(input) }),
-  approveSubmission: (id: string, reason = '') => api<Job>('/knowledge-submissions/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reason }) }),
-  rejectSubmission: (id: string, reason: string) => api<KnowledgeSubmission>('/knowledge-submissions/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reason }) }),
-  retrySubmissionReview: (id: string) => api<Job>('/knowledge-submissions/' + encodeURIComponent(id) + '/retry-review', { method: 'POST', body: '{}' }),
-  feedback: (requestId: string, chunkId: string, relevant: boolean, note = '') => api<void>('/feedback', { method: 'POST', body: JSON.stringify({ requestId, chunkId, relevant, note }) }),
+  knowledgeSearch: (query: string, libraryIds: string[] = []) => api<KnowledgeSearchResponse>('/knowledge/search', { method: 'POST', body: JSON.stringify({ query, libraryIds, limit: 20 }) }),
+  knowledge: (uri: string) => api<KnowledgeRevision>('/knowledge/resolve?uri=' + encodeURIComponent(uri)),
+  submissions: (libraryId?: string) => api<KAHSubmission[]>('/knowledge/submissions?' + new URLSearchParams({ ...(libraryId ? { libraryId } : {}) }).toString()),
+  submission: (id: string) => api<KAHSubmission>('/knowledge/submissions/' + encodeURIComponent(id)),
+  approveSubmission: (id: string, reason = '') => api<KnowledgeRevision>('/knowledge/submissions/' + encodeURIComponent(id) + '/approve', { method: 'POST', body: JSON.stringify({ reason }) }),
+  rejectSubmission: (id: string, reason: string) => api<KAHSubmission>('/knowledge/submissions/' + encodeURIComponent(id) + '/reject', { method: 'POST', body: JSON.stringify({ reason }) }),
   providers: () => api<Provider[]>('/providers'),
   saveProvider: (provider: Provider) => api<Provider>('/providers', { method: 'POST', body: JSON.stringify(provider) }),
   providerModels: (id: string) => api<{models:string[]}>(`/providers/${id}/models`),

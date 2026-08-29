@@ -1,8 +1,12 @@
 openapi: 3.1.0
 info:
   title: Knowledge Agent Hub API
-  version: 1.0.0
-  description: Local-first evidence retrieval, knowledge management, and optional cited-answer API.
+  version: 2.0.0
+  description: |
+    Desktop-only Source and KAH knowledge-management API. Agent access is MCP
+    Streamable HTTP only: POST /mcp/read for retrieval and POST /mcp/manage for
+    validation and draft submission. Those JSON-RPC MCP endpoints are described
+    by their MCP tools and resources, not this OpenAPI document.
   contact:
     name: Knowledge Agent Hub maintainers
     url: https://github.com/KiriuKazurei/agent-knownledge-base
@@ -186,20 +190,6 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Skill'}
-  /skills/query:
-    post:
-      operationId: querySkills
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/SkillQueryRequest'}
-      responses:
-        '200':
-          description: Matching Skill metadata
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SkillQueryResponse'}
   /skills/{skillId}/manifest:
     parameters:
       - in: path
@@ -410,116 +400,65 @@ paths:
       responses:
         '204': {description: Deleted}
 
-  /query:
+  /knowledge/search:
     post:
-      operationId: query
+      operationId: searchKnowledge
+      description: Desktop-only KAH directory search. Agents must use knowledge_search through Read MCP.
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/QueryRequest'}
+            schema: {$ref: '#/components/schemas/KnowledgeSearchRequest'}
       responses:
         '200':
-          description: Query result
+          description: Relevant stable knowledge directory entries, without full body text.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/QueryResponse'}
-  /query/stream:
-    post:
-      operationId: queryStream
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/QueryRequest'}
-      responses:
-        '200':
-          description: retrieval, citation, answer_delta, complete, or error events
-          content:
-            text/event-stream:
-              schema: {type: string}
-  /feedback:
-    post:
-      operationId: submitFeedback
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [requestId, chunkId, relevant]
-              properties:
-                requestId: {type: string}
-                chunkId: {type: string}
-                relevant: {type: boolean}
-                note: {type: string, maxLength: 1000}
-      responses:
-        '204': {description: Recorded}
-  /knowledge-submissions/prepare:
-    post:
-      operationId: prepareKnowledgeSubmission
-      parameters:
-        - in: query
-          name: libraryId
-          required: true
-          schema: {type: string, format: uuid}
-      responses:
-        '200':
-          description: One-time submission ticket and formatter Skill protocol
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SubmissionPreparation'}
-  /knowledge-submissions:
+              schema: {$ref: '#/components/schemas/KnowledgeSearchResponse'}
+  /knowledge/resolve:
     get:
-      operationId: listKnowledgeSubmissions
+      operationId: resolveKnowledge
+      parameters:
+        - in: query
+          name: uri
+          required: true
+          schema: {type: string, format: uri}
+      responses:
+        '200':
+          description: A stable or explicitly revision-pinned KAH knowledge payload.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Knowledge'}
+  /knowledge/submissions:
+    get:
+      operationId: listKAHKnowledgeSubmissions
       parameters:
         - in: query
           name: libraryId
           schema: {type: string, format: uuid}
-        - in: query
-          name: status
-          schema: {type: string, enum: [pending_review, reviewing, approved_pending_index, published, rejected]}
       responses:
         '200':
-          description: Knowledge submissions visible to the current identity
+          description: KAH draft submissions visible to the desktop session.
           content:
             application/json:
-              schema: {type: array, items: {$ref: '#/components/schemas/KnowledgeSubmission'}}
-    post:
-      operationId: submitKnowledgeSubmission
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/KnowledgeSubmissionRequest'}
-      responses:
-        '201':
-          description: Submission accepted into the pending review state
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
-        '200':
-          description: Idempotent replay of an existing submission
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
-  /knowledge-submissions/{submissionId}:
+              schema: {type: array, items: {$ref: '#/components/schemas/KAHSubmission'}}
+  /knowledge/submissions/{submissionId}:
     parameters:
       - in: path
         name: submissionId
         required: true
         schema: {type: string, format: uuid}
     get:
-      operationId: getKnowledgeSubmission
+      operationId: getKAHKnowledgeSubmission
       responses:
         '200':
-          description: Submission detail including normalized Markdown and review history
+          description: KAH submission, validation outcome, review history, and normalized Markdown.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
-  /knowledge-submissions/{submissionId}/approve:
+              schema: {$ref: '#/components/schemas/KAHSubmission'}
+  /knowledge/submissions/{submissionId}/approve:
     post:
-      operationId: approveKnowledgeSubmission
+      operationId: approveKAHKnowledgeSubmission
       parameters:
         - in: path
           name: submissionId
@@ -530,14 +469,14 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/ReviewDecisionRequest'}
       responses:
-        '202':
-          description: Approved and queued for formal index publication
+        '200':
+          description: Approved and atomically published KAH revision.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/Job'}
-  /knowledge-submissions/{submissionId}/reject:
+              schema: {$ref: '#/components/schemas/Knowledge'}
+  /knowledge/submissions/{submissionId}/reject:
     post:
-      operationId: rejectKnowledgeSubmission
+      operationId: rejectKAHKnowledgeSubmission
       parameters:
         - in: path
           name: submissionId
@@ -550,24 +489,10 @@ paths:
             schema: {$ref: '#/components/schemas/ReviewDecisionRequest'}
       responses:
         '200':
-          description: Submission rejected and retained as an immutable revision
+          description: Submission rejected and retained for audit.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/KnowledgeSubmission'}
-  /knowledge-submissions/{submissionId}/retry-review:
-    post:
-      operationId: retryKnowledgeSubmissionReview
-      parameters:
-        - in: path
-          name: submissionId
-          required: true
-          schema: {type: string, format: uuid}
-      responses:
-        '202':
-          description: Review or failed publication was queued again
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/Job'}
+              schema: {$ref: '#/components/schemas/KAHSubmission'}
 
   /tokens:
     get:
@@ -589,7 +514,7 @@ paths:
               required: [name, scopes]
               properties:
                 name: {type: string}
-                scopes: {type: array, items: {enum: [query, feedback, submit]}}
+                scopes: {type: array, minItems: 1, items: {enum: [mcp_read, mcp_manage]}}
                 libraryIds: {type: array, items: {type: string, format: uuid}}
       responses:
         '201':
@@ -735,32 +660,92 @@ components:
         text: {type: string}
         location: {type: object, additionalProperties: true}
         contentHash: {type: string}
-    Evidence:
-      allOf:
-        - {$ref: '#/components/schemas/Chunk'}
-        - type: object
-          required: [libraryId, title, scores]
-          properties:
-            libraryId: {type: string, format: uuid}
-            title: {type: string}
-            scores:
-              type: object
-              properties:
-                lexical: {type: number}
-                vector: {type: number}
-                fusion: {type: number}
-                final: {type: number}
-    QueryRequest:
+    KnowledgeSearchRequest:
       type: object
       required: [query]
       properties:
         query: {type: string, minLength: 1, maxLength: 8000}
         libraryIds: {type: array, items: {type: string, format: uuid}}
+        types: {type: array, items: {enum: [concept, claim, procedure, decision, policy, reference]}}
+        language: {enum: [zh-CN, en]}
+        classifications: {type: object, additionalProperties: {type: array, items: {type: string}}}
         tags: {type: array, items: {type: string}}
-        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
-        retrievalMode: {enum: [hybrid, lexical, vector], default: hybrid}
-        responseMode: {enum: [evidence, answer], default: evidence}
-        providerId: {type: string}
+        statuses: {type: array, items: {enum: [stable]}, description: The directory currently exposes only the current stable revision of each knowledge item.}
+        limit: {type: integer, minimum: 1, maximum: 100, default: 20}
+        cursor: {type: string}
+    KnowledgeDirectoryEntry:
+      type: object
+      required: [uri, revision, title, description, type, language, primaryPath, tags, matchedSectionIds, matchReason, flags, trust]
+      properties:
+        uri: {type: string, format: uri}
+        revision: {type: integer, minimum: 1}
+        title: {type: string}
+        description: {type: string}
+        type: {enum: [concept, claim, procedure, decision, policy, reference]}
+        subtype: {type: string}
+        language: {enum: [zh-CN, en]}
+        primaryPath: {type: array, items: {type: string}}
+        classifications: {type: object, additionalProperties: {type: array, items: {type: string}}}
+        tags: {type: array, items: {type: string}}
+        matchedSectionIds: {type: array, items: {type: string}}
+        matchReason: {type: string}
+        flags: {type: array, items: {type: string}}
+        trust: {type: string}
+        conflictUris: {type: array, items: {type: string, format: uri}}
+    KnowledgeSearchResponse:
+      type: object
+      required: [results]
+      properties:
+        results: {type: array, items: {$ref: '#/components/schemas/KnowledgeDirectoryEntry'}}
+        nextCursor: {type: string}
+    Knowledge:
+      type: object
+      required: [libraryId, knowledgeId, uri, revision, payload, markdown, contentHash, status, flags, stable, createdAt]
+      properties:
+        libraryId: {type: string, format: uuid}
+        knowledgeId: {type: string, format: uuid}
+        uri: {type: string, format: uri}
+        revision: {type: integer, minimum: 1}
+        payload: {type: object, additionalProperties: true, description: Canonical kah-knowledge/v1 JSON payload.}
+        markdown: {type: string, description: Generated OKF-style YAML frontmatter and Markdown export.}
+        contentHash: {type: string}
+        status: {enum: [draft, approved_pending_index, stable, deprecated, rejected]}
+        flags: {type: array, items: {type: string, enum: [stale, disputed, source-unverified, external-untrusted]}}
+        stable: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        submittedBy: {type: string}
+    KAHSubmission:
+      type: object
+      required: [id, libraryId, knowledgeUri, revision, mode, reviewStatus, validation, title, summary, tags, provenance, clientSubmissionId, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        libraryId: {type: string, format: uuid}
+        knowledgeUri: {type: string, format: uri}
+        revision: {type: integer, minimum: 1}
+        mode: {enum: [create, propose_revision]}
+        reviewStatus: {enum: [pending_review, approved_pending_index, rejected, published]}
+        validation: {type: object, additionalProperties: true}
+        title: {type: string}
+        summary: {type: string}
+        tags: {type: array, items: {type: string}}
+        provenance: {type: object, additionalProperties: true}
+        markdown: {type: string}
+        reviews: {type: array, items: {$ref: '#/components/schemas/KAHReviewRecord'}}
+        submittedByTokenId: {type: string, format: uuid}
+        clientSubmissionId: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    KAHReviewRecord:
+      type: object
+      required: [id, submissionId, reviewerType, reviewer, decision, reason, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        submissionId: {type: string, format: uuid}
+        reviewerType: {enum: [human, model]}
+        reviewer: {type: string}
+        decision: {enum: [approve, reject, needs_human]}
+        reason: {type: string}
+        createdAt: {type: string, format: date-time}
     Skill:
       type: object
       required: [id, name, description, rootPath, entryPoint, contentHash, status, fileCount, createdAt, updatedAt]
@@ -794,13 +779,6 @@ components:
       properties:
         usesLibraryIds: {type: array, items: {type: string, format: uuid}}
         requiresLibraryIds: {type: array, items: {type: string, format: uuid}}
-    SkillQueryRequest:
-      type: object
-      required: [query]
-      properties:
-        query: {type: string, minLength: 1, maxLength: 8000}
-        libraryIds: {type: array, items: {type: string, format: uuid}}
-        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
     SavedSearch:
       type: object
       required: [id, name, query, libraryIds, tags]
@@ -850,20 +828,6 @@ components:
       required: [libraryId]
       properties:
         libraryId: {type: string}
-
-    SkillQueryResponse:
-      type: object
-      required: [requestId, skills]
-      properties:
-        requestId: {type: string}
-        skills: {type: array, items: {$ref: '#/components/schemas/SkillMatch'}}
-    SkillMatch:
-      allOf:
-        - {$ref: '#/components/schemas/Skill'}
-        - type: object
-          required: [score]
-          properties:
-            score: {type: number}
     SkillFile:
       type: object
       required: [path, size, sha256, mediaType]
@@ -882,16 +846,6 @@ components:
         root: {type: string}
         entryPoint: {$ref: '#/components/schemas/SkillFile'}
         files: {type: array, items: {$ref: '#/components/schemas/SkillFile'}}
-    QueryResponse:
-      type: object
-      required: [requestId, evidence, degraded]
-      properties:
-        requestId: {type: string}
-        evidence: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
-        requiredSkills: {type: array, items: {$ref: '#/components/schemas/Skill'}}
-        answer: {type: string}
-        degraded: {type: boolean}
-        degradedReason: {type: string}
     Job:
       type: object
       required: [id, kind, status, progress, createdAt, updatedAt]
@@ -903,87 +857,17 @@ components:
         message: {type: string}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
-    SubmissionPreparation:
-      type: object
-      required: [ticket, expiresAt, formatter, constraints]
-      properties:
-        ticket: {type: string}
-        expiresAt: {type: string, format: date-time}
-        formatter: {$ref: '#/components/schemas/SubmissionFormatter'}
-        constraints: {$ref: '#/components/schemas/SubmissionConstraints'}
-    SubmissionFormatter:
-      type: object
-      required: [id, name, description, contentHash, content, files]
-      properties:
-        id: {type: string, format: uuid}
-        name: {type: string}
-        description: {type: string}
-        contentHash: {type: string}
-        content: {type: string}
-        files: {type: array, items: {type: string}}
-    SubmissionConstraints:
-      type: object
-      required: [maxBytes, requiredFrontmatter, requiredSections]
-      properties:
-        maxBytes: {type: integer, minimum: 1}
-        requiredFrontmatter: {type: array, items: {type: string}}
-        requiredSections: {type: array, items: {type: string}}
-    KnowledgeSubmissionRequest:
-      type: object
-      required: [libraryId, ticket, clientSubmissionId, markdown]
-      properties:
-        libraryId: {type: string, format: uuid}
-        ticket: {type: string}
-        clientSubmissionId: {type: string, minLength: 1, maxLength: 200}
-        markdown: {type: string, minLength: 1, maxLength: 1048576}
-        supersedesSubmissionId: {type: string, format: uuid}
     ReviewDecisionRequest:
       type: object
       properties:
         reason: {type: string, maxLength: 2000}
-    ReviewRecord:
-      type: object
-      required: [id, reviewerType, reviewer, decision, reason, issues, createdAt]
-      properties:
-        id: {type: string, format: uuid}
-        reviewerType: {type: string, enum: [human, model]}
-        reviewer: {type: string}
-        decision: {type: string, enum: [approve, reject, needs_human]}
-        confidence: {type: number, minimum: 0, maximum: 1}
-        reason: {type: string}
-        issues: {type: array, items: {type: string}}
-        createdAt: {type: string, format: date-time}
-    KnowledgeSubmission:
-      type: object
-      required: [id, documentId, libraryId, title, contentHash, status, reviewStatus, formatterSkillId, formatterSkillHash, submittedAt, updatedAt]
-      properties:
-        id: {type: string, format: uuid}
-        documentId: {type: string, format: uuid}
-        libraryId: {type: string, format: uuid}
-        title: {type: string}
-        summary: {type: string}
-        tags: {type: array, items: {type: string}}
-        provenance: {type: object, additionalProperties: true}
-        contentHash: {type: string}
-        status: {enum: [pending_review, approved_pending_index, rejected, ready, failed]}
-        reviewStatus: {enum: [pending_review, reviewing, approved_pending_index, published, rejected]}
-        formatterSkillId: {type: string, format: uuid}
-        formatterSkillHash: {type: string}
-        supersedesSubmissionId: {type: string, format: uuid}
-        reviewJobId: {type: string, format: uuid}
-        reviewError: {type: string}
-        submittedAt: {type: string, format: date-time}
-        updatedAt: {type: string, format: date-time}
-        markdown: {type: string}
-        document: {$ref: '#/components/schemas/Document'}
-        reviews: {type: array, items: {$ref: '#/components/schemas/ReviewRecord'}}
     AgentToken:
       type: object
       required: [id, name, scopes, createdAt]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
-        scopes: {type: array, items: {type: string}}
+        scopes: {type: array, minItems: 1, items: {type: string, enum: [mcp_read, mcp_manage]}}
         libraryIds: {type: array, items: {type: string}}
         secret: {type: string, description: Returned once at creation}
         createdAt: {type: string, format: date-time}

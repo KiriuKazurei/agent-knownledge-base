@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/model"
@@ -27,6 +28,10 @@ import (
 type Store struct {
 	DB       *sql.DB
 	DataRoot string
+	// SQLite serializes writers, but revision allocation happens before the
+	// insert transaction. Keep draft creation atomic within this process so
+	// concurrent propose_revision requests cannot select the same revision.
+	kahDraftMu sync.Mutex
 }
 
 // QueuedJob is the internal form used by the startup recovery loop. The
@@ -172,6 +177,73 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL DEFAULT '',
 			details_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_items (
+			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			stable_revision INTEGER, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_items_library_stable ON knowledge_items(library_id, stable_revision)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_revisions (
+			knowledge_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+			revision INTEGER NOT NULL, payload_json TEXT NOT NULL, markdown TEXT NOT NULL,
+			content_hash TEXT NOT NULL, status TEXT NOT NULL, flags_json TEXT NOT NULL DEFAULT '[]',
+			submitted_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+			PRIMARY KEY(knowledge_id, revision)
+		)`,
+		// Content identity is scoped to a library, not globally. The previous
+		// global index made the same fact impossible to submit to two libraries.
+		`DROP INDEX IF EXISTS idx_knowledge_revisions_content_hash`,
+		`CREATE TABLE IF NOT EXISTS knowledge_content_dedup (
+			library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			content_hash TEXT NOT NULL, knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL,
+			PRIMARY KEY(library_id, content_hash)
+		)`,
+		`INSERT OR IGNORE INTO knowledge_content_dedup(library_id,content_hash,knowledge_id,revision)
+			SELECT ki.library_id,kr.content_hash,kr.knowledge_id,kr.revision
+			FROM knowledge_revisions kr JOIN knowledge_items ki ON ki.id=kr.knowledge_id`,
+		`CREATE TABLE IF NOT EXISTS knowledge_sections (
+			knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL, section_id TEXT NOT NULL,
+			heading TEXT NOT NULL, content TEXT NOT NULL, ordinal INTEGER NOT NULL,
+			PRIMARY KEY(knowledge_id, revision, section_id),
+			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_sections_order ON knowledge_sections(knowledge_id, revision, ordinal)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_sources (
+			knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL, source_id TEXT NOT NULL,
+			resource TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', locator_json TEXT NOT NULL DEFAULT '{}', snapshot_json TEXT NOT NULL DEFAULT '{}',
+			PRIMARY KEY(knowledge_id, revision, source_id),
+			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_relations (
+			knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL, relation_type TEXT NOT NULL,
+			target_uri TEXT NOT NULL, target_revision INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(knowledge_id, revision, relation_type, target_uri, target_revision),
+			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_knowledge_relations_target ON knowledge_relations(target_uri, target_revision, relation_type)`,
+		`CREATE TABLE IF NOT EXISTS knowledge_derivations (
+			id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL,
+			derivation_json TEXT NOT NULL,
+			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS kah_submissions (
+			id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL REFERENCES knowledge_items(id) ON DELETE CASCADE,
+			revision INTEGER NOT NULL, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			submitted_by_token_id TEXT NOT NULL DEFAULT '', client_submission_id TEXT NOT NULL,
+			mode TEXT NOT NULL, review_status TEXT NOT NULL, validation_json TEXT NOT NULL DEFAULT '{}',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			UNIQUE(submitted_by_token_id, client_submission_id),
+			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_kah_submissions_review ON kah_submissions(library_id, review_status, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS kah_reviews (
+			id TEXT PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES kah_submissions(id) ON DELETE CASCADE,
+			reviewer_type TEXT NOT NULL, reviewer TEXT NOT NULL, decision TEXT NOT NULL,
+			reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS legacy_submission_archives (
+			submission_id TEXT PRIMARY KEY REFERENCES knowledge_submissions(id) ON DELETE CASCADE,
+			archived_at TEXT NOT NULL, reason TEXT NOT NULL
+		)`,
 		`UPDATE jobs SET status='queued', message='Recovered after restart' WHERE status='running'`,
 	}
 	for _, statement := range statements {
@@ -205,6 +277,11 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migration failed checking libraries.%s: %w", column.name, err)
 		}
 	}
+	// Legacy Markdown submissions lack stable section IDs and exact citations.
+	// Preserve them for audit, but prevent their implicit use by the v1 workflow.
+	_, _ = s.DB.Exec(`INSERT OR IGNORE INTO legacy_submission_archives(submission_id, archived_at, reason)
+		SELECT id, ?, 'legacy Markdown submission requires explicit KAH v1 resubmission'
+		FROM knowledge_submissions WHERE review_status <> 'published'`, time.Now().UTC().Format(time.RFC3339Nano))
 	return nil
 }
 

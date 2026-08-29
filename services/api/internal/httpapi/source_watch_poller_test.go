@@ -32,8 +32,15 @@ func TestSourceWatchPollerQueuesChangedFile(t *testing.T) {
 	server.runSourceWatchScan(initialJob.ID, watch)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go server.runSourceWatchPoller(ctx, 20*time.Millisecond)
+	pollerDone := make(chan struct{})
+	go func() {
+		defer close(pollerDone)
+		server.runSourceWatchPoller(ctx, 20*time.Millisecond)
+	}()
+	defer func() {
+		cancel()
+		<-pollerDone
+	}()
 	time.Sleep(80 * time.Millisecond)
 	if err := os.WriteFile(source, []byte("# 已修改\n\n轮询后内容已进入索引。\n"), 0o640); err != nil {
 		t.Fatal(err)

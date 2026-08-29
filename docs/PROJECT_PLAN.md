@@ -5,6 +5,8 @@
 > 远程仓库：`https://github.com/KiriuKazurei/agent-knownledge-base`  
 > 许可证：MIT
 
+> 迁移说明（2026-08-30）：本计划中的旧 Agent HTTP 查询、SSE、Skill discovery 和 Markdown submission 接口已由 KAH + MCP 重构取代。当前 Agent 入口是 `/mcp/read` 与 `/mcp/manage`；`/api/v1` 仅保留桌面管理接口。具体当前契约和未完成门槛见 `docs/KAH_MCP_REFACTOR_PLAN.md`。
+
 ## 1. 总体方案
 
 - 所有开发内容固定在 `E:\AI\agent-knownledge-base`，不移动项目目录；源码、配置和持久化记录中禁止硬编码盘符或绝对路径。
@@ -23,7 +25,7 @@ Electron React ───────┐
 本机/局域网 Agent ────┼─> Gin API ──> SQLite + 文件对象库
                       │            ├─> Python Worker ──> LanceDB 索引
                       │            └─> OpenAI / Anthropic / LM Studio
-                      └─ HTTP + POST-SSE
+                      └─ MCP Streamable HTTP（Read / Manage）
 ```
 
 ## 2. 架构与主要功能
@@ -64,7 +66,7 @@ Electron React ───────┐
 - LM Studio 优化包括自动检测、连接诊断、模型枚举、下载状态、加载/卸载、显存估算及 OpenAI/Anthropic 兼容协议选择；不静默安装 LM Studio。[兼容端点](https://lmstudio.ai/docs/developer/openai-compat)、[模型管理 API](https://lmstudio.ai/docs/developer/rest/list)
 - 即使没有生成模型，检索、引用和全文管理仍可工作。
 - 每个知识库默认禁止把内容发送到远程模型，必须逐库授权；本地 LM Studio 不视为远程外发。
-- API Key 存 Windows Credential Manager；Agent 令牌只保存哈希，可撤销并限定 `query`、`feedback` 权限及可访问知识库。
+- API Key 存 Windows Credential Manager；Agent MCP 令牌只保存哈希，可撤销并限定 `mcp_read`、`mcp_manage` 权限及可访问知识库。
 - 启用局域网模式时配置监听地址、允许网段和独立令牌，并提示使用 TLS 反向代理；不直接暴露 Python worker、SQLite 或 LanceDB。
 - Electron 启用 `contextIsolation`、sandbox 和 CSP，关闭 renderer Node 集成；preload 仅公开最小类型化接口。
 
@@ -74,15 +76,15 @@ Electron React ───────┐
 - 主要接口：
   - 知识库、文档、目录、标签、固定搜索 CRUD。
   - 文件/目录/URL 导入、任务状态、取消和重新索引。
-  - `POST /api/v1/query`：返回证据或非流式答案。
-  - `POST /api/v1/query/stream`：使用带 Authorization Header 的 fetch SSE 流式返回。
-  - `POST /api/v1/feedback`：Agent 提交相关/不相关反馈，不允许修改知识正文。
+  - `POST /mcp/read`：Agent 通过 MCP `knowledge_search`、`knowledge_get` 和 resources 读取稳定 KAH 知识。
+  - `POST /mcp/manage`：Agent 通过 MCP 校验并提交 review-only KAH draft，不允许发布或删除。
+  - `/api/v1/knowledge/*`：桌面端 KAH 目录、revision 和审核管理。
   - 提供商连接测试、模型选择、LM Studio 管理、令牌管理、备份恢复和健康状态。
 - `QueryRequest` 包含查询文本、知识库范围、标签/目录/时间过滤、`topK`、检索模式及 `evidence|answer` 响应模式。
 - 每条证据包含文档/分块 ID、来源标题、文本、可解析位置、内容哈希，以及全文、向量、融合和最终分数。
 - 流事件固定为 `retrieval`、`citation`、`answer_delta`、`complete`、`error`；生成答案中的引用必须能解析回具体分块和原文位置。
 - 错误统一使用 RFC 9457 Problem Details，附稳定错误码、请求 ID 和可重试标志。
-- Provider、Retriever、Reranker、AgentTransport 使用内部接口隔离；V1 只实现 HTTP + SSE，但未来可增加消息队列或 MCP 适配器而不改变查询核心。
+- Provider、Retriever、Reranker、AgentTransport 使用内部接口隔离；MCP transport 与文档 Worker 检索核心解耦，后续可增加其他 transport 而不改变 KAH revision 契约。
 
 ## 4. 分阶段实施
 
@@ -123,7 +125,7 @@ Electron React ───────┐
 - 知识库、SQLite 文档/分块/任务记录、内容寻址对象存储和 Markdown/TXT/PDF 导入链路已存在。
 - Python worker 已具备文档解析、分块及 JSON-RPC/LanceDB 索引接口。
 - 桌面端已具备三栏工作台、文档预览/引用定位和导入任务展示。
-- `/api/v1/query`、流式查询和只读 Agent 查询权限已实现，并返回统一请求 ID、证据及降级状态。
+- 文档检索仍由桌面 API/Worker 链路提供；Agent 的当前只读入口已切换为 Read MCP，返回稳定 KAH 目录和 revision-pinned 资源。
 
 严格验收仍保留的边界：
 

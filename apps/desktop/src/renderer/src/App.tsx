@@ -8,13 +8,13 @@ import ReactMarkdown from 'react-markdown'
 import {
   Archive, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3, Database,
   File, FileCode2, FilePlus2, FolderArchive, FolderSearch2, Import, KeyRound, Library, Link2, ListFilter,
-  LoaderCircle, Menu, Moon, PanelRight, Plus, RefreshCw, Save, Search, Settings, ShieldCheck, ThumbsDown, ThumbsUp,
+  LoaderCircle, Menu, Moon, PanelRight, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
   Sparkles, Star, Sun, Tag, Trash2, X
 } from 'lucide-react'
 import { client, getRuntime } from './api'
 import { canonicalDocumentPath, isExternalMarkdownLink, resolveMarkdownDocumentPath } from './markdownLinks'
 import { useUI } from './store'
-import type { AgentToken, Document, Evidence, Library as LibraryType, Provider, SavedSearch, Skill } from './types'
+import type { AgentToken, Document, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, SavedSearch, Skill } from './types'
 
 function IconButton({ label, children, onClick, active = false }: { label: string; children: React.ReactNode; onClick?: () => void; active?: boolean }) {
   return <button className={`icon-button ${active ? 'active' : ''}`} aria-label={label} title={label} onClick={onClick}>{children}</button>
@@ -43,12 +43,9 @@ export function App() {
   const [watchOpen, setWatchOpen] = useState(false)
   const [selectedDocument, setSelectedDocument] = useState<string>('')
   const [query, setQuery] = useState('')
-  const [searchResults, setSearchResults] = useState<Evidence[] | null>(null)
+  const [searchResults, setSearchResults] = useState<KnowledgeDirectoryEntry[] | null>(null)
   const [searchInfo, setSearchInfo] = useState('')
-  const [answer, setAnswer] = useState('')
-  const [answerRequestId, setAnswerRequestId] = useState('')
-  const [feedbackState, setFeedbackState] = useState<Record<string, 'up'|'down'>>({})
-  const [providerId, setProviderId] = useState('')
+  const [selectedKnowledge, setSelectedKnowledge] = useState('')
   const [markdownLinkError, setMarkdownLinkError] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
@@ -65,10 +62,9 @@ export function App() {
   const jobs = useQuery({ queryKey: ['jobs'], queryFn: client.jobs, refetchInterval: 2500 })
   const savedSearches = useQuery({ queryKey: ['saved-searches'], queryFn: client.savedSearches })
   const detail = useQuery({ queryKey: ['document', selectedDocument], queryFn: () => client.document(selectedDocument), enabled: Boolean(selectedDocument) })
-  const providers = useQuery({ queryKey: ['providers'], queryFn: client.providers })
+  const knowledgeDetail = useQuery({ queryKey: ['knowledge', selectedKnowledge], queryFn: () => client.knowledge(selectedKnowledge), enabled: Boolean(selectedKnowledge) })
 
   useEffect(() => { if (!selectedLibrary && libraries.data?.[0]) setSelectedLibrary(libraries.data[0].id) }, [libraries.data, selectedLibrary])
-  useEffect(() => { if (!providerId && providers.data?.[0]) setProviderId(providers.data[0].id) }, [providers.data, providerId])
   useEffect(() => {
     const dark = ui.theme === 'dark' || (ui.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches)
     document.documentElement.dataset.theme = dark ? 'dark' : 'light'
@@ -89,20 +85,8 @@ export function App() {
   const importFiles = useMutation({ mutationFn: async () => { if (!selectedLibrary) throw new Error('请先选择知识库'); const paths = await window.kah.selectFiles(); if (!paths.length) return []; return client.importFiles(selectedLibrary, paths) }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['jobs'] }); queryClient.invalidateQueries({ queryKey: ['documents'] }) } })
   const importUrl = useMutation({ mutationFn: async () => { if (!selectedLibrary || !urlValue.trim()) throw new Error('请选择知识库并输入 URL'); return client.importUrl(selectedLibrary, urlValue.trim()) }, onSuccess: () => { setUrlOpen(false); setUrlValue(''); queryClient.invalidateQueries({ queryKey: ['jobs'] }) } })
   const search = useMutation({
-    mutationFn: ({ text, libraryId }: { text: string; libraryId: string }) => client.query(text, libraryId ? [libraryId] : []),
-    onSuccess: (response) => { setSearchResults(response.evidence); setAnswerRequestId(response.requestId); setSearchInfo(response.degraded ? response.degradedReason ?? '已使用降级检索' : String(response.evidence.length) + ' 条结果') }
-  })
-  const answerSearch = useMutation({
-    mutationFn: () => {
-      if (!providerId) throw new Error('请先在设置中保存一个模型服务')
-      if (!query.trim()) throw new Error('请先输入问题')
-      return client.query(query.trim(), selectedLibrary ? [selectedLibrary] : [], 'answer', providerId)
-    },
-    onSuccess: (response) => { setSearchResults(response.evidence); setAnswer(response.answer ?? ''); setAnswerRequestId(response.requestId); setSearchInfo(response.degraded ? response.degradedReason ?? '回答使用了降级检索' : '已生成引用回答') }
-  })
-  const feedback = useMutation({
-    mutationFn: ({ requestId, item, relevant }: { requestId: string; item: Evidence; relevant: boolean }) => client.feedback(requestId, item.id, relevant),
-    onSuccess: (_value, variables) => setFeedbackState((current) => ({ ...current, [variables.item.id]: variables.relevant ? 'up' : 'down' }))
+    mutationFn: ({ text, libraryId }: { text: string; libraryId: string }) => client.knowledgeSearch(text, libraryId ? [libraryId] : []),
+    onSuccess: (response) => { setSearchResults(response.results); setSearchInfo(`${response.results.length} 个知识体`) }
   })
   const saveSearch = useMutation({ mutationFn: () => client.createSavedSearch(query.slice(0, 24), query, selectedLibrary ? [selectedLibrary] : []), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['saved-searches'] }) })
 
@@ -113,9 +97,7 @@ export function App() {
   function runSearch(value = query) {
     const normalized = value.trim()
     setQuery(value)
-    setAnswer('')
-    setAnswerRequestId('')
-    setFeedbackState({})
+    setSelectedKnowledge('')
     if (!normalized) { setSearchResults(null); setSearchInfo(''); return }
     setTimeout(() => search.mutate({ text: normalized, libraryId: selectedLibrary }), 0)
   }
@@ -138,6 +120,7 @@ export function App() {
       const linked = candidates.find((doc) => doc.sourcePath && canonicalDocumentPath(doc.sourcePath) === canonicalTarget)
       if (linked) {
         setActiveSection('knowledge')
+        setSelectedKnowledge('')
         setSelectedDocument(linked.id)
         setSearchResults(null)
         return
@@ -160,14 +143,14 @@ export function App() {
         <button className={`library-row ${activeSection === 'knowledge' ? 'active' : ''}`} onClick={() => setActiveSection('knowledge')}>
           <span className="library-icon"><Library size={17}/></span><span className="library-copy"><strong>知识管理</strong><small>文档、网页与检索</small></span><ChevronRight size={15}/>
         </button>
-        <button className={`library-row ${activeSection === 'skills' ? 'active' : ''}`} onClick={() => { setActiveSection('skills'); setSelectedDocument('') }}>
+        <button className={`library-row ${activeSection === 'skills' ? 'active' : ''}`} onClick={() => { setActiveSection('skills'); setSelectedDocument(''); setSelectedKnowledge('') }}>
           <span className="library-icon"><FolderArchive size={17}/></span><span className="library-copy"><strong>Skills</strong><small>Agent 能力包</small></span><ChevronRight size={15}/>
         </button>
-        <button className="library-row" aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { setActiveSection('review'); setSelectedDocument('') }}><span className="library-icon"><Clock3 size={17}/></span><span className="library-copy"><strong>待审核</strong><small>Agent 提交的知识</small></span><ChevronRight size={15}/></button>
+        <button className="library-row" aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { setActiveSection('review'); setSelectedDocument(''); setSelectedKnowledge('') }}><span className="library-icon"><Clock3 size={17}/></span><span className="library-copy"><strong>待审核</strong><small>Agent 提交的知识</small></span><ChevronRight size={15}/></button>
         {activeSection === 'knowledge' && <>
         <div className="nav-heading"><span>知识库</span><IconButton label="新建知识库" onClick={() => createLibrary.mutate()}><Plus size={17} /></IconButton></div>
         {libraries.isLoading && <div className="sidebar-loading"><LoaderCircle className="spin" size={16}/> 正在载入</div>}
-        {libraries.data?.map((library) => <button key={library.id} className={`library-row ${selectedLibrary === library.id ? 'active' : ''}`} onClick={() => { setSelectedLibrary(library.id); setSelectedDocument(''); setSearchResults(null) }}>
+        {libraries.data?.map((library) => <button key={library.id} className={`library-row ${selectedLibrary === library.id ? 'active' : ''}`} onClick={() => { setSelectedLibrary(library.id); setSelectedDocument(''); setSelectedKnowledge(''); setSearchResults(null) }}>
           <span className="library-icon"><Library size={17}/></span><span className="library-copy"><strong>{library.name}</strong><small>{library.description || '本地知识库'}</small></span><ChevronRight size={15}/>
         </button>)}
         <div className="nav-heading saved-heading"><span>整理</span></div>
@@ -200,42 +183,24 @@ export function App() {
       </header>
       <div className="search-row">
         <Search size={19}/><input ref={searchInput} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') runSearch() }} placeholder="搜索知识、问题或精确短语…" aria-label="搜索知识" />
-        {query && <IconButton label="清空搜索" onClick={() => { setQuery(''); setSearchResults(null); setAnswer(''); setAnswerRequestId(''); setFeedbackState({}) }}><X size={16}/></IconButton>}
+        {query && <IconButton label="清空搜索" onClick={() => { setQuery(''); setSearchResults(null); setSelectedKnowledge('') }}><X size={16}/></IconButton>}
         <kbd>Ctrl K</kbd><button className="search-submit" onClick={() => runSearch()} disabled={!query.trim() || search.isPending}>{search.isPending ? <LoaderCircle className="spin" size={17}/> : '搜索'}</button>
       </div>
-      <div className="answer-controls">
-        <label htmlFor="answer-provider">引用回答模型</label>
-        <select id="answer-provider" value={providerId} onChange={(event) => setProviderId(event.target.value)} aria-label="选择引用回答模型">
-          <option value="">选择模型服务</option>
-          {providers.data?.map((provider) => <option value={provider.id} key={provider.id}>{provider.name} · {provider.local ? '本地' : '远程'}</option>)}
-        </select>
-        <button className="button secondary" onClick={() => { setAnswer(''); answerSearch.mutate() }} disabled={!query.trim() || !providerId || answerSearch.isPending}><Sparkles size={16}/>{answerSearch.isPending ? '正在生成…' : '生成引用回答'}</button>
-      </div>
       {urlOpen && <form className="url-import" onSubmit={(event) => { event.preventDefault(); importUrl.mutate() }}><Link2 size={18}/><label htmlFor="import-url">网页地址</label><input id="import-url" type="url" value={urlValue} onChange={(event) => setUrlValue(event.target.value)} placeholder="https://example.com/article" autoFocus/><button className="button primary" type="submit">保存网页</button><IconButton label="关闭" onClick={() => setUrlOpen(false)}><X size={17}/></IconButton></form>}
-      <div className="content-heading"><div><h2>{searchResults ? '搜索结果' : '文档'}</h2><span>{searchResults ? `${searchResults.length} 条证据` : `${shownDocuments.length} 个项目`}</span></div><div className="content-tools">{searchResults && <button className="text-button" onClick={() => saveSearch.mutate()} disabled={saveSearch.isPending}><Save size={15}/> 固定搜索</button>}<IconButton label="刷新" onClick={() => { documents.refetch(); jobs.refetch() }}><RefreshCw size={17}/></IconButton><IconButton label="筛选"><ListFilter size={17}/></IconButton></div></div>
-      {answer && <article className="answer-card" aria-live="polite">
-        <div className="answer-card-heading"><Sparkles size={16}/><h3>引用回答</h3></div>
-        <MarkdownContent content={answer} onLink={(href) => { void openMarkdownLink(href, detail.data) }} />
-        <p className="answer-card-meta">回答仅基于当前证据；请用下方按钮标记引用是否有帮助。</p>
-      </article>}
+      <div className="content-heading"><div><h2>{searchResults ? '知识搜索结果' : '来源文档'}</h2><span>{searchResults ? `${searchResults.length} 个知识体` : `${shownDocuments.length} 个项目`}</span></div><div className="content-tools">{searchResults && <button className="text-button" onClick={() => saveSearch.mutate()} disabled={saveSearch.isPending}><Save size={15}/> 固定搜索</button>}<IconButton label="刷新" onClick={() => { documents.refetch(); jobs.refetch() }}><RefreshCw size={17}/></IconButton><IconButton label="筛选"><ListFilter size={17}/></IconButton></div></div>
        {markdownLinkError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{markdownLinkError}</div>}
       <section className="result-list" aria-live="polite">
         {(documents.error || search.error || importFiles.error || importUrl.error) && <div role="alert" className="inline-error"><CircleAlert size={18}/>{String((documents.error || search.error || importFiles.error || importUrl.error)?.message)}</div>}
-        {(answerSearch.error || feedback.error) && <div role="alert" className="inline-error"><CircleAlert size={18}/>{((answerSearch.error || feedback.error) as Error).message}</div>}
-        {searchResults ? searchResults.map((item, index) => <button className="result-card" key={item.id} onClick={() => setSelectedDocument(item.documentId)}><span className="rank">{String(index + 1).padStart(2, '0')}</span><div className="result-body"><div className="result-title"><strong>{item.title}</strong><span>{Math.round(item.scores.final * 100)}% 匹配</span></div><p>{item.text}</p><div className="result-meta"><LocationLabel location={item.location}/><span>SHA {item.contentHash.slice(0, 8)}</span></div></div></button>) : shownDocuments.map((document) => <DocumentRow key={document.id} document={document} active={selectedDocument === document.id} onSelect={() => setSelectedDocument(document.id)} />)}
+        {searchResults ? searchResults.map((item, index) => <button className="result-card" key={item.uri} onClick={() => { setSelectedKnowledge(`${item.uri}?revision=${item.revision}`); setSelectedDocument('') }}><span className="rank">{String(index + 1).padStart(2, '0')}</span><div className="result-body"><div className="result-title"><strong>{item.title}</strong><span>{item.type}{item.subtype ? ` · ${item.subtype}` : ''}</span></div><p>{item.description}</p><div className="result-meta"><span>{item.language} · r{item.revision}</span><span>{item.trust === 'verified' ? '已验证' : '未验证'}{item.flags.length ? ` · ${item.flags.join('、')}` : ''}</span></div></div></button>) : shownDocuments.map((document) => <DocumentRow key={document.id} document={document} active={selectedDocument === document.id} onSelect={() => { setSelectedDocument(document.id); setSelectedKnowledge('') }} />)}
         {!documents.isLoading && !searchResults && shownDocuments.length === 0 && <Empty icon={<FilePlus2 size={25}/>} title="还没有知识文档" text="导入文件或保存网页，索引完成后即可检索。" />}
         {searchResults?.length === 0 && <Empty icon={<Search size={25}/>} title="没有找到匹配内容" text="尝试更换关键词，或检查所选知识库的索引状态。" />}
       </section>
-      {searchResults && searchResults.length > 0 && <div className="evidence-feedback" aria-label="证据反馈">
-        <span>标记证据相关性</span>
-        {searchResults.map((item, index) => <div className="evidence-feedback-row" key={item.id}><span>证据 {index + 1}</span><button className={feedbackState[item.id] === 'up' ? 'feedback-button selected' : 'feedback-button'} aria-label={'证据 ' + (index + 1) + ' 有帮助'} aria-pressed={feedbackState[item.id] === 'up'} disabled={!answerRequestId || feedback.isPending} onClick={() => feedback.mutate({ requestId: answerRequestId, item, relevant: true })}><ThumbsUp size={14}/></button><button className={feedbackState[item.id] === 'down' ? 'feedback-button selected' : 'feedback-button'} aria-label={'证据 ' + (index + 1) + ' 没有帮助'} aria-pressed={feedbackState[item.id] === 'down'} disabled={!answerRequestId || feedback.isPending} onClick={() => feedback.mutate({ requestId: answerRequestId, item, relevant: false })}><ThumbsDown size={14}/></button></div>)}
-      </div>}
       <footer className="status-bar" role="status" aria-live="polite"><div>{activeJobs.length ? <><LoaderCircle className="spin" size={13}/> {activeJobs.length} 个任务正在处理</> : <><CheckCircle2 size={13}/> 索引队列空闲</>}</div><div>{searchInfo || '证据优先 · 本地优先'}<span className="separator"/>v0.1.0</div></footer>
       </>}
     </main>
 
     <aside className="detail-pane" aria-label={activeSection === 'skills' ? 'Skill 详情' : activeSection === 'review' ? '审核提示' : '文档预览'}>
-      {activeSection === 'skills' ? <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
+      {activeSection === 'skills' ? <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
     </aside>
     <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
   </div>
@@ -247,26 +212,23 @@ function ReviewWorkspace({ libraries }: { libraries: LibraryType[] }) {
   const [reason, setReason] = useState('')
   const submissions = useQuery({ queryKey: ['submissions'], queryFn: () => client.submissions(), refetchInterval: 3000 })
   const detail = useQuery({ queryKey: ['submission', selectedId], queryFn: () => client.submission(selectedId), enabled: Boolean(selectedId) })
-  const lastReview = detail.data?.reviews?.[detail.data.reviews.length - 1]
-  const modelRejected = lastReview?.reviewerType === 'model' && lastReview.decision === 'reject'
   const approve = useMutation({ mutationFn: () => client.approveSubmission(selectedId, reason.trim()), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['submissions'] }); queryClient.invalidateQueries({ queryKey: ['jobs'] }); setReason('') } })
   const reject = useMutation({ mutationFn: () => client.rejectSubmission(selectedId, reason.trim()), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['submissions'] }); setReason('') } })
-  const retry = useMutation({ mutationFn: () => client.retrySubmissionReview(selectedId), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['submissions'] }); queryClient.invalidateQueries({ queryKey: ['jobs'] }) } })
-  const actionable = submissions.data?.filter((item) => ['pending_review', 'reviewing', 'approved_pending_index'].includes(item.reviewStatus) || (item.reviewStatus === 'rejected' && item.reviews?.[item.reviews.length - 1]?.reviewerType === 'model' && item.reviews?.[item.reviews.length - 1]?.decision === 'reject')) ?? []
+  const actionable = submissions.data?.filter((item) => item.reviewStatus === 'pending_review') ?? []
   const libraryName = (id: string) => libraries.find((item) => item.id === id)?.name ?? id
   return <>
     <header className="workspace-header"><div><span className="eyebrow">质量门禁</span><h1>待审核知识</h1></div><div className="header-actions"><button className="button secondary" onClick={() => submissions.refetch()} disabled={submissions.isFetching}><RefreshCw size={17}/>刷新队列</button></div></header>
     <div className="content-heading"><div><h2>Agent 提交</h2><span>{actionable.length} 条待处理</span></div><span className="muted">审核通过后才会进入正式检索</span></div>
-    {(submissions.error || detail.error || approve.error || reject.error || retry.error) && <div className="inline-error" role="alert"><CircleAlert size={18}/>{String(((submissions.error || detail.error || approve.error || reject.error || retry.error) as Error).message)}</div>}
+    {(submissions.error || detail.error || approve.error || reject.error) && <div className="inline-error" role="alert"><CircleAlert size={18}/>{String(((submissions.error || detail.error || approve.error || reject.error) as Error).message)}</div>}
     <section className="review-layout">
       <div className="result-list" aria-label="待审核提交列表">
         {submissions.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入审核队列</div>}
-        {actionable.map((item) => <button className={'document-row ' + (selectedId === item.id ? 'active' : '')} key={item.id} onClick={() => { setSelectedId(item.id); setReason('') }}><span className="file-icon"><FileCode2 size={19}/></span><span className="document-copy"><strong>{item.title}</strong><small>{libraryName(item.libraryId)} · {item.summary || '无摘要'}</small></span><span className={'status-pill ' + item.reviewStatus}>{item.reviewStatus === 'reviewing' ? '审核中' : item.reviewStatus === 'approved_pending_index' ? '待发布' : item.reviewStatus === 'rejected' ? '待人工复核' : '待审核'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}
+        {actionable.map((item) => <button className={'document-row ' + (selectedId === item.id ? 'active' : '')} key={item.id} onClick={() => { setSelectedId(item.id); setReason('') }}><span className="file-icon"><FileCode2 size={19}/></span><span className="document-copy"><strong>{item.title}</strong><small>{libraryName(item.libraryId)} · {item.summary || '无摘要'}</small></span><span className={'status-pill ' + item.reviewStatus}>待审核</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}
         {!submissions.isLoading && !actionable.length && <Empty icon={<CheckCircle2 size={25}/>} title="审核队列为空" text="新的 Agent 提交会先停留在这里，审核通过后才可检索。" />}
       </div>
       <article className="review-card" aria-live="polite">
         {!detail.data && <Empty icon={<PanelRight size={25}/>} title="选择一条提交" text="查看完整 Markdown、来源声明和审核记录。" />}
-        {detail.data && <><div className="review-card-heading"><div><span className="eyebrow">{libraryName(detail.data.libraryId)}</span><h2>{detail.data.title}</h2></div><span className={'status-pill ' + detail.data.reviewStatus}>{detail.data.reviewStatus}</span></div><p className="settings-lead">{detail.data.summary}</p>{detail.data.reviewError && <div className="inline-error" role="alert">上次处理失败：{detail.data.reviewError}</div>}<div className="review-provenance"><strong>来源声明</strong><pre>{JSON.stringify(detail.data.provenance ?? {}, null, 2)}</pre></div>{detail.data.markdown && <div className="review-markdown"><MarkdownContent content={detail.data.markdown}/></div>}<label className="review-reason">审核说明<textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="批准模型拒绝的内容时必须填写理由；驳回时必填。" rows={3}/></label><div className="preview-actions"><button className="button primary" onClick={() => approve.mutate()} disabled={approve.isPending || retry.isPending || (detail.data.reviewStatus === 'published' || detail.data.reviewStatus === 'approved_pending_index' || (detail.data.reviewStatus === 'rejected' && !modelRejected))}><CheckCircle2 size={16}/>批准并发布</button><button className="button danger" onClick={() => reject.mutate()} disabled={reject.isPending || retry.isPending || !reason.trim() || (detail.data.reviewStatus === 'published' || detail.data.reviewStatus === 'approved_pending_index' || (detail.data.reviewStatus === 'rejected' && !modelRejected))}><CircleAlert size={16}/>驳回</button></div>{(detail.data.reviewStatus === "approved_pending_index" || detail.data.reviewError) && <button className="button secondary" onClick={() => retry.mutate()} disabled={retry.isPending}>重试处理</button>}{detail.data.reviews?.length ? <div className="review-history"><h3>审核记录</h3>{detail.data.reviews.map((review) => <div className="review-history-row" key={review.id}><strong>{review.reviewerType === 'model' ? '审查模型' : '人工审核'} · {review.decision}</strong><span>{review.reason}</span></div>)}</div> : null}</>}
+        {detail.data && <><div className="review-card-heading"><div><span className="eyebrow">{libraryName(detail.data.libraryId)}</span><h2>{detail.data.title}</h2></div><span className={'status-pill ' + detail.data.reviewStatus}>{detail.data.reviewStatus}</span></div><p className="settings-lead">{detail.data.summary}</p><div className="review-provenance"><strong>来源声明</strong><pre>{JSON.stringify(detail.data.provenance ?? {}, null, 2)}</pre></div>{detail.data.markdown && <div className="review-markdown"><MarkdownContent content={detail.data.markdown}/></div>}<label className="review-reason">审核说明<textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="驳回时必须填写理由；批准说明会进入审计记录。" rows={3}/></label><div className="preview-actions"><button className="button primary" onClick={() => approve.mutate()} disabled={approve.isPending || detail.data.reviewStatus !== 'pending_review'}><CheckCircle2 size={16}/>批准并发布</button><button className="button danger" onClick={() => reject.mutate()} disabled={reject.isPending || !reason.trim() || detail.data.reviewStatus !== 'pending_review'}><CircleAlert size={16}/>驳回</button></div>{detail.data.reviews?.length ? <div className="review-history"><h3>审核记录</h3>{detail.data.reviews.map((review) => <div className="review-history-row" key={review.id}><strong>{review.reviewerType === 'model' ? '审查模型' : '人工审核'} · {review.decision}</strong><span>{review.reason}</span></div>)}</div> : null}</>}
       </article>
     </section>
     <footer className="status-bar" role="status" aria-live="polite"><div><Clock3 size={13}/> 审核通过前不会写入正式索引</div><div>{submissions.isFetching ? '正在刷新审核状态' : '审核记录可追溯'}<span className="separator"/>v0.1.0</div></footer>
@@ -356,6 +318,18 @@ function LocationLabel({ location }: { location: Record<string, unknown> }) {
   return <span><BookOpen size={13}/>{parts.join(' · ') || '文档片段'}</span>
 }
 
+function KnowledgePreview({ detail, loading }: { detail?: KnowledgeRevision; loading: boolean }) {
+  if (loading) return <div className="preview-loading"><LoaderCircle className="spin"/>正在载入知识体</div>
+  if (!detail) return <Empty icon={<BookOpen size={25}/>} title="选择一个知识体" text="知识正文、来源和审查提示会显示在这里。" />
+  const payload = detail.payload
+  return <div className="preview-pane">
+    <div className="preview-heading"><div><span className="eyebrow">KAH Knowledge Profile v1</span><h2>{payload.title}</h2><p>{payload.description}</p></div><span className={`status-pill ${detail.status}`}>{detail.stable ? `稳定 r${detail.revision}` : detail.status}</span></div>
+    <div className="preview-meta"><span>{payload.type}{payload.subtype ? ` · ${payload.subtype}` : ''}</span><span>{payload.language}</span><span>{detail.flags.length ? detail.flags.join('、') : '无运行时警告'}</span></div>
+    {payload.sections.map((section) => <section className="preview-section" key={section.id}><h3>{section.heading}</h3><MarkdownContent content={section.content}/></section>)}
+    {payload.sources?.length ? <section className="preview-section"><h3>可引用来源</h3><ul>{payload.sources.map((source) => <li key={source.id}><code>{`[^${source.id}]`}</code> {source.resource.startsWith('https://') ? <a href={source.resource} onClick={(event) => { event.preventDefault(); void window.kah.openExternal(source.resource) }}>{source.title || source.resource}</a> : <span>{source.title || source.resource}</span>}{source.locator && <small> · {Object.entries(source.locator).map(([key, value]) => `${key}: ${String(value)}`).join(', ')}</small>}</li>)}</ul></section> : null}
+  </div>
+}
+
 function DocumentPreview({ detail, loading, onSaved, onLink }: { detail?: Awaited<ReturnType<typeof client.document>>; loading: boolean; onSaved: () => void; onLink: (href: string, source?: Pick<Document, 'sourcePath' | 'libraryId'>) => void }) {
   const [editing, setEditing] = useState(false)
   const [content, setContent] = useState('')
@@ -386,12 +360,12 @@ function TokenSettings({ libraries }: { libraries: LibraryType[] }) {
   const tokens = useQuery({ queryKey: ['tokens'], queryFn: client.tokens })
   const [name, setName] = useState('')
   const [secret, setSecret] = useState('')
-  const [scopes, setScopes] = useState<AgentToken['scopes']>(['query', 'feedback'])
-  const create = useMutation({ mutationFn: () => client.createToken(name, scopes, libraries.map((item) => item.id)), onSuccess: (token) => { setSecret(token.secret ?? ''); setName(''); setScopes(['query', 'feedback']); queryClient.invalidateQueries({ queryKey: ['tokens'] }) } })
+  const [scopes, setScopes] = useState<AgentToken['scopes']>(['mcp_read'])
+  const create = useMutation({ mutationFn: () => client.createToken(name, scopes, libraries.map((item) => item.id)), onSuccess: (token) => { setSecret(token.secret ?? ''); setName(''); setScopes(['mcp_read']); queryClient.invalidateQueries({ queryKey: ['tokens'] }) } })
   const revoke = useMutation({ mutationFn: client.revokeToken, onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tokens'] }) })
   const toggleScope = (scope: AgentToken['scopes'][number]) => setScopes((current) => current.includes(scope) ? current.filter((value) => value !== scope) as AgentToken['scopes'] : [...current, scope])
-  const submitEnabled = scopes.includes('submit')
-  return <section><h3>Agent 访问令牌</h3><p className="settings-lead">令牌只显示一次。知识提交令牌只能写入勾选的知识库，并且提交内容必须经过审核才能检索。</p>{secret&&<div className="secret-box"><strong>立即复制此令牌</strong><code>{secret}</code><button onClick={()=>navigator.clipboard.writeText(secret)}>复制</button></div>}<div className="inline-form"><label><span>令牌名称</span><input value={name} onChange={(e)=>setName(e.target.value)} placeholder="例如：本机 Codex"/></label><button className="button primary" onClick={()=>create.mutate()} disabled={!name.trim() || create.isPending || (submitEnabled && libraries.length === 0)}>创建令牌</button></div><div className="token-scope-grid"><strong>令牌能力</strong>{(['query', 'feedback', 'submit'] as const).map((scope)=><label className="switch-row" key={scope}><span><strong>{scope === 'query' ? '查询知识' : scope === 'feedback' ? '提交相关性反馈' : '提交新知识'}</strong><small>{scope === 'submit' ? '绑定当前全部知识库，提交后进入待审核' : '可按需启用'}</small></span><input type="checkbox" checked={scopes.includes(scope)} onChange={()=>toggleScope(scope)}/></label>)}</div>{submitEnabled && <p className="settings-lead">当前提交权限绑定 {libraries.length} 个知识库；没有知识库时无法创建 submit 令牌。</p>}{(create.error || revoke.error) && <p className="form-error" role="alert">{((create.error || revoke.error) as Error).message}</p>}<div className="token-list">{tokens.data?.map((token:AgentToken)=><div className="token-row" key={token.id}><KeyRound size={17}/><div><strong>{token.name}</strong><span>{token.scopes.join(' · ')} · {new Date(token.createdAt).toLocaleDateString()}</span></div><button className="danger-icon" aria-label={'撤销 ' + token.name} onClick={()=>revoke.mutate(token.id)}><Trash2 size={17}/></button></div>)}</div></section>
+  const manageEnabled = scopes.includes('mcp_manage')
+  return <section><h3>Agent MCP 访问令牌</h3><p className="settings-lead">令牌只显示一次。Read 令牌只读取已发布知识；Manage 令牌只能提交待人工审核的草稿。</p>{secret&&<div className="secret-box"><strong>立即复制此令牌</strong><code>{secret}</code><button onClick={()=>navigator.clipboard.writeText(secret)}>复制</button></div>}<div className="inline-form"><label><span>令牌名称</span><input value={name} onChange={(e)=>setName(e.target.value)} placeholder="例如：本机 Codex"/></label><button className="button primary" onClick={()=>create.mutate()} disabled={!name.trim() || !scopes.length || create.isPending || libraries.length === 0}>创建令牌</button></div><div className="token-scope-grid"><strong>令牌能力</strong>{(['mcp_read', 'mcp_manage'] as const).map((scope)=><label className="switch-row" key={scope}><span><strong>{scope === 'mcp_read' ? 'Read MCP：获取知识' : 'Manage MCP：提交知识草稿'}</strong><small>{scope === 'mcp_manage' ? '不能直接发布或删除知识' : '搜索、目录读取与章节读取'}</small></span><input type="checkbox" checked={scopes.includes(scope)} onChange={()=>toggleScope(scope)}/></label>)}</div>{manageEnabled && <p className="settings-lead">Manage 权限同样绑定当前 {libraries.length} 个知识库，所有写入都进入人工审核。</p>}{(create.error || revoke.error) && <p className="form-error" role="alert">{((create.error || revoke.error) as Error).message}</p>}<div className="token-list">{tokens.data?.map((token:AgentToken)=><div className="token-row" key={token.id}><KeyRound size={17}/><div><strong>{token.name}</strong><span>{token.scopes.join(' · ')} · {new Date(token.createdAt).toLocaleDateString()}</span></div><button className="danger-icon" aria-label={'撤销 ' + token.name} onClick={()=>revoke.mutate(token.id)}><Trash2 size={17}/></button></div>)}</div></section>
 }
 function DataSettings({runtime}:{runtime?:RuntimeConfig}) { const [result,setResult]=useState('');const backup=useMutation({mutationFn:client.backup,onSuccess:(value)=>setResult(`${value.path}\nSHA-256 ${value.sha256}`)});return <section><h3>数据与备份</h3><p className="settings-lead">安装模式使用用户数据目录；便携模式使用程序旁的相对 <code>data</code> 目录。</p><div className="info-card"><Database size={19}/><div><strong>当前数据目录</strong><code>{runtime?.dataRoot??'正在读取…'}</code></div></div><button className="button primary" onClick={()=>backup.mutate()} disabled={backup.isPending}><Archive size={16}/>{backup.isPending?'正在生成…':'创建完整备份'}</button>{result&&<pre className="backup-result">{result}</pre>}</section> }
 

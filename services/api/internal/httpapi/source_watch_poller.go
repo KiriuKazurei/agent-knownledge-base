@@ -43,11 +43,11 @@ func (s *Server) runSourceWatchPoller(ctx context.Context, interval time.Duratio
 		active := map[string]bool{}
 		for _, watch := range watches {
 			active[watch.ID] = true
-		if !watch.Enabled {
-			delete(snapshots, watch.ID)
-			delete(inFlight, watch.ID)
-			continue
-		}
+			if !watch.Enabled {
+				delete(snapshots, watch.ID)
+				delete(inFlight, watch.ID)
+				continue
+			}
 			fingerprint, fingerprintErr := sourceWatchFingerprint(watch)
 			if fingerprintErr != nil {
 				s.logSourceWatch("fingerprint source watch "+watch.ID, fingerprintErr)
@@ -74,7 +74,7 @@ func (s *Server) runSourceWatchPoller(ctx context.Context, interval time.Duratio
 			snapshots[watch.ID] = fingerprint
 			inFlight[watch.ID] = true
 			go func(jobID string, item model.SourceWatch) {
-				s.runSourceWatchScan(jobID, item)
+				s.runSourceWatchScanContext(ctx, jobID, item)
 				done <- item.ID
 			}(job.ID, watch)
 		}
@@ -89,6 +89,10 @@ func (s *Server) runSourceWatchPoller(ctx context.Context, interval time.Duratio
 	for {
 		select {
 		case <-ctx.Done():
+			for len(inFlight) > 0 {
+				id := <-done
+				delete(inFlight, id)
+			}
 			return
 		case id := <-done:
 			delete(inFlight, id)

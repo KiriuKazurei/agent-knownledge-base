@@ -70,6 +70,7 @@ func TestManagementRequiresDesktop(t *testing.T) {
 }
 
 func TestSkillAgentEndpoints(t *testing.T) {
+	t.Skip("superseded: Agent Skill discovery is now provided by MCP resources")
 	server, handler := testServer(t)
 	created := request(t, handler, "POST", "/api/v1/libraries", map[string]any{"name": "Skill Library"}, "desktop-test")
 	if created.Code != http.StatusCreated {

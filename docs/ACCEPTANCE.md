@@ -1,5 +1,7 @@
 # V1 acceptance record
 
+> Contract note (2026-08-30): Agent query, Skill discovery, and knowledge submission now use KAH + MCP. Any older `/api/v1/query*`, `/api/v1/skills/query`, or Markdown submission references below are historical; use `docs/KAH_MCP_REFACTOR_PLAN.md` for the current acceptance matrix.
+
 Acceptance evidence is kept in three separate categories:
 
 1. Automated: unit, contract, integration, accessibility, and package tests.

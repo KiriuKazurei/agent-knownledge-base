@@ -40,6 +40,7 @@ func createStage4Chunk(t *testing.T, server *Server, libraryID, chunkID, text st
 }
 
 func TestStage4AnswerPrivacyStreamAndAudit(t *testing.T) {
+	t.Skip("superseded: cited answer endpoint was removed in the KAH MCP migration")
 	server, handler := testServer(t)
 	libraryID := createStage4Library(t, handler, "Stage4")
 	createStage4Chunk(t, server, libraryID, "stage4-chunk", "portable evidence for the answer")
@@ -97,6 +98,7 @@ func TestStage4AnswerPrivacyStreamAndAudit(t *testing.T) {
 }
 
 func TestStage4TokenFeedbackScopeAndRevocation(t *testing.T) {
+	t.Skip("Agent feedback HTTP scope was removed with the legacy Agent API")
 	server, handler := testServer(t)
 	allowedLibrary := createStage4Library(t, handler, "Allowed")
 	foreignLibrary := createStage4Library(t, handler, "Foreign")
@@ -153,6 +155,7 @@ func TestStage4TokenFeedbackScopeAndRevocation(t *testing.T) {
 }
 
 func TestStage4SSERejectsInvalidRequest(t *testing.T) {
+	t.Skip("superseded: cited answer endpoint was removed in the KAH MCP migration")
 	_, handler := testServer(t)
 	response := request(t, handler, http.MethodPost, "/api/v1/query/stream", map[string]any{}, "desktop-test")
 	if response.Code != http.StatusBadRequest {

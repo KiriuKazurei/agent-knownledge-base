@@ -12,6 +12,7 @@ import (
 )
 
 func TestKnowledgeSubmissionChinesePendingReviewAndRevisionLifecycle(t *testing.T) {
+	t.Skip("superseded by KAH v1 immutable revision lifecycle")
 	server, handler := testServer(t)
 	libraryID := createStage4Library(t, handler, "知识提交库")
 	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{
@@ -115,6 +116,7 @@ func TestKnowledgeSubmissionChinesePendingReviewAndRevisionLifecycle(t *testing.
 }
 
 func TestKnowledgeSubmissionFailedPublicationCanBeRetried(t *testing.T) {
+	t.Skip("superseded by KAH v1 immutable draft resubmission workflow")
 	server, handler := testServer(t)
 	libraryID := createStage4Library(t, handler, "发布重试库")
 	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{

@@ -158,7 +158,11 @@ func (s *Server) deleteSourceWatch(c *gin.Context) {
 }
 
 func (s *Server) runSourceWatchScan(jobID string, watch model.SourceWatch) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	s.runSourceWatchScanContext(context.Background(), jobID, watch)
+}
+
+func (s *Server) runSourceWatchScanContext(parent context.Context, jobID string, watch model.SourceWatch) {
+	ctx, cancel := context.WithTimeout(parent, 20*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.05, "Scanning "+watch.RootPath)
 	paths := []string{}
@@ -184,13 +188,17 @@ func (s *Server) runSourceWatchScan(jobID string, watch model.SourceWatch) {
 	}
 	var scanErr error
 	for index, path := range paths {
+		if err := ctx.Err(); err != nil {
+			s.failJob(ctx, jobID, err)
+			return
+		}
 		child, childErr := s.Store.CreateJob(ctx, "file_import", map[string]any{"libraryId": watch.LibraryID, "path": path, "watchId": watch.ID, "name": filepath.Base(path)})
 		if childErr != nil {
 			if scanErr == nil {
 				scanErr = fmt.Errorf("create import job for %s: %w", filepath.Base(path), childErr)
 			}
 		} else {
-			s.runFileImport(child.ID, watch.LibraryID, path)
+			s.runFileImportContext(ctx, child.ID, watch.LibraryID, path)
 			jobs, listErr := s.Store.ListJobs(ctx)
 			if listErr != nil {
 				if scanErr == nil {

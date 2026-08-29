@@ -1,4 +1,6 @@
-# Agent 主动提交知识与审核发布方案
+# Agent 主动提交知识与审核发布方案（历史版本）
+
+> 本文记录的是旧的 Markdown submission 方案，已被 KAH + MCP 重构取代；其中 `/knowledge-submissions*`、submission ticket 和 formatter Skill 不再是当前 Agent 公共契约。当前实现以 `docs/KAH_MCP_REFACTOR_PLAN.md`、`POST /mcp/manage` 和 `/api/v1/knowledge/submissions*` 为准。旧表和迁移代码仅为本地数据库兼容保留。
 
 ## 概要
 

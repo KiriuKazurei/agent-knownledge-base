@@ -9,6 +9,7 @@ import (
 )
 
 func TestKnowledgeSubmissionReadRequiresSubmitScope(t *testing.T) {
+	t.Skip("superseded by MCP read/manage scope isolation")
 	_, handler := testServer(t)
 	libraryID := createStage4Library(t, handler, "提交作用域库")
 	response := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{

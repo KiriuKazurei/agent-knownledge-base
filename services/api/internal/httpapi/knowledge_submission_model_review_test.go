@@ -13,6 +13,7 @@ import (
 )
 
 func TestKnowledgeSubmissionAutomaticModelApprovalPublishesFormalKnowledge(t *testing.T) {
+	t.Skip("superseded by KAH v1 MCP submission and human-review flow")
 	server, handler := testServerWithWorker(t)
 	libraryID := createStage4Library(t, handler, "模型审核库")
 	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

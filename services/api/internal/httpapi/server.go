@@ -64,25 +64,28 @@ func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery(), s.requestContext(), cors())
+	readMCP := router.Group("/mcp/read")
+	readMCP.Use(s.mcpOrigin(), s.authenticate(), s.requireScope("mcp_read"))
+	readMCP.POST("", s.handleMCP("read"))
+	manageMCP := router.Group("/mcp/manage")
+	manageMCP.Use(s.mcpOrigin(), s.authenticate(), s.requireScope("mcp_manage"))
+	manageMCP.POST("", s.handleMCP("manage"))
 	v1 := router.Group("/api/v1")
 	v1.GET("/health", s.health)
 	auth := v1.Group("")
 	auth.Use(s.authenticate())
-	auth.POST("/query", s.requireScope("query"), s.query)
-	auth.POST("/query/stream", s.requireScope("query"), s.queryStream)
-	auth.POST("/skills/query", s.requireScope("query"), s.querySkills)
-	auth.GET("/skills/:id/manifest", s.requireScope("query"), s.skillManifest)
-	auth.GET("/skills/:id/files/*path", s.requireScope("query"), s.skillFile)
-	auth.POST("/feedback", s.requireScope("feedback"), s.feedback)
-	auth.POST("/knowledge-submissions/prepare", s.requireScope("submit"), s.prepareKnowledgeSubmission)
-	auth.GET("/knowledge-submissions", s.requireScope("submit"), s.listKnowledgeSubmissions)
-	auth.GET("/knowledge-submissions/:id", s.requireScope("submit"), s.getKnowledgeSubmission)
-	auth.POST("/knowledge-submissions", s.requireScope("submit"), s.submitKnowledgeSubmission)
-	auth.POST("/knowledge-submissions/:id/approve", requireDesktop(), s.approveKnowledgeSubmission)
-	auth.POST("/knowledge-submissions/:id/reject", requireDesktop(), s.rejectKnowledgeSubmission)
-	auth.POST("/knowledge-submissions/:id/retry-review", requireDesktop(), s.retryKnowledgeSubmissionReview)
 	admin := auth.Group("")
 	admin.Use(requireDesktop())
+	// Agent retrieval is native MCP only. The remaining Skill file endpoints
+	// are desktop management views, never Agent discovery or retrieval APIs.
+	admin.GET("/skills/:id/manifest", s.skillManifest)
+	admin.GET("/skills/:id/files/*path", s.skillFile)
+	admin.POST("/knowledge/search", s.desktopKnowledgeSearch)
+	admin.GET("/knowledge/resolve", s.desktopKnowledgeGet)
+	admin.GET("/knowledge/submissions", s.listKAHSubmissions)
+	admin.GET("/knowledge/submissions/:id", s.getKAHSubmission)
+	admin.POST("/knowledge/submissions/:id/approve", s.approveKAHSubmission)
+	admin.POST("/knowledge/submissions/:id/reject", s.rejectKAHSubmission)
 	admin.GET("/libraries", s.listLibraries)
 	admin.POST("/libraries", s.createLibrary)
 	admin.PATCH("/libraries/:id", s.updateLibrary)
@@ -703,7 +706,11 @@ func (s *Server) importFiles(c *gin.Context) {
 	c.JSON(202, jobs)
 }
 func (s *Server) runFileImport(jobID, libraryID, path string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	s.runFileImportContext(context.Background(), jobID, libraryID, path)
+}
+
+func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, path string) {
+	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Copying source")
 	relative, digest, err := s.putFileWithRetry(ctx, path)
@@ -1260,13 +1267,13 @@ func (s *Server) createToken(c *gin.Context) {
 		return
 	}
 	for _, scope := range input.Scopes {
-		if scope != "query" && scope != "feedback" && scope != "submit" {
-			s.problem(c, 400, "invalid_scope", "Only query, feedback, and submit scopes are supported", false)
+		if scope != "mcp_read" && scope != "mcp_manage" {
+			s.problem(c, 400, "invalid_scope", "Only mcp_read and mcp_manage scopes are supported", false)
 			return
 		}
 	}
-	if contains(input.Scopes, "submit") && len(input.LibraryIDs) == 0 {
-		s.problem(c, 400, "submit_library_required", "submit tokens must be bound to at least one library", false)
+	if (contains(input.Scopes, "mcp_read") || contains(input.Scopes, "mcp_manage")) && len(input.LibraryIDs) == 0 {
+		s.problem(c, 400, "mcp_library_required", "MCP tokens must be bound to at least one library", false)
 		return
 	}
 	for index, libraryID := range input.LibraryIDs {

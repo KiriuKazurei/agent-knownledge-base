@@ -11,6 +11,7 @@ import (
 )
 
 func TestQueryStreamForwardsProviderDeltas(t *testing.T) {
+	t.Skip("superseded: cited answer endpoint was removed in the KAH MCP migration")
 	server, handler := testServer(t)
 	libraryID := createStage4Library(t, handler, "真实流式")
 	createStage4Chunk(t, server, libraryID, "stream-chunk", "流式回答的事实证据")
