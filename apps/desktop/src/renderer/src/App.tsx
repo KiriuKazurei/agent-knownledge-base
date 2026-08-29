@@ -12,6 +12,7 @@ import {
   Sparkles, Star, Sun, Tag, Trash2, X
 } from 'lucide-react'
 import { client, getRuntime } from './api'
+import { SkillMappingDetailPane, SkillMappingsWorkspace } from './SkillMappings'
 import { canonicalDocumentPath, isExternalMarkdownLink, resolveMarkdownDocumentPath } from './markdownLinks'
 import { useUI } from './store'
 import type { AgentToken, Document, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, SavedSearch, Skill } from './types'
@@ -53,6 +54,8 @@ export function App() {
   const [backendError, setBackendError] = useState('')
   const [activeSection, setActiveSection] = useState<'knowledge'|'skills'|'review'>('knowledge')
   const [selectedSkill, setSelectedSkill] = useState('')
+  const [skillsView, setSkillsView] = useState<'skills'|'mappings'>('skills')
+  const [selectedMappingTarget, setSelectedMappingTarget] = useState('')
   const searchInput = useRef<HTMLInputElement>(null)
 
   const allDocuments = useQuery({ queryKey: ['documents-all', selectedLibrary], queryFn: () => client.documents(selectedLibrary), enabled: Boolean(selectedLibrary) })
@@ -169,7 +172,7 @@ export function App() {
     </aside>
 
     <main className="workspace">
-      {activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} /> : <>
+      {activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} view={skillsView} onViewChange={setSkillsView} selectedTargetId={selectedMappingTarget} onTargetSelect={setSelectedMappingTarget} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} /> : <>
       {backendError && <div role="alert" className="alert-banner"><CircleAlert size={17}/>{backendError}</div>}
       <header className="workspace-header">
         <div><span className="eyebrow">当前知识库</span><h1>{selectedLibraryValue?.name ?? '全部知识'}</h1></div>
@@ -199,8 +202,8 @@ export function App() {
       </>}
     </main>
 
-    <aside className="detail-pane" aria-label={activeSection === 'skills' ? 'Skill 详情' : activeSection === 'review' ? '审核提示' : '文档预览'}>
-      {activeSection === 'skills' ? <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
+    <aside className="detail-pane" aria-label={activeSection === 'skills' ? (skillsView === 'mappings' ? '外部映射详情' : 'Skill 详情') : activeSection === 'review' ? '审核提示' : '文档预览'}>
+      {activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
     </aside>
     <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
   </div>
@@ -238,7 +241,7 @@ function SkillHint() {
   return <Empty icon={<FolderArchive size={25}/>} title="选择一个 Skill" text="Skill 的标准入口、文件清单和知识库关联会显示在这里。" />
 }
 
-function SkillsWorkspace({ libraries: _libraries, selectedId, onSelect }: { libraries: LibraryType[]; selectedId: string; onSelect: (id: string) => void }) {
+function SkillsWorkspace({ libraries: _libraries, selectedId, onSelect, view, onViewChange, selectedTargetId, onTargetSelect }: { libraries: LibraryType[]; selectedId: string; onSelect: (id: string) => void; view: 'skills'|'mappings'; onViewChange: (view: 'skills'|'mappings') => void; selectedTargetId: string; onTargetSelect: (id: string) => void }) {
   const queryClient = useQueryClient()
   const [filter, setFilter] = useState('')
   const skills = useQuery({ queryKey: ['skills'], queryFn: client.skills, refetchInterval: 4000 })
@@ -257,21 +260,14 @@ function SkillsWorkspace({ libraries: _libraries, selectedId, onSelect }: { libr
 
   return <>
     <header className="workspace-header">
-      <div><span className="eyebrow">全局能力</span><h1>Skills</h1></div>
+      <div><span className="eyebrow">全局能力</span><h1>{view === 'skills' ? 'Skills' : '外部映射'}</h1></div>
       <div className="header-actions">
-        <button className="button secondary" onClick={() => importMutation.mutate({ kind: 'skill-markdown' })} disabled={importMutation.isPending}><FileCode2 size={17}/> 导入 SKILL.md</button>
-        <button className="button primary" onClick={() => importMutation.mutate({ kind: 'skill-zip' })} disabled={importMutation.isPending}><Import size={17}/> 导入 Skill zip</button>
+        <div className="segmented-control" role="tablist" aria-label="Skills 工作台视图"><button role="tab" aria-selected={view === 'skills'} className={view === 'skills' ? 'active' : ''} onClick={() => onViewChange('skills')}>已安装 Skills</button><button role="tab" aria-selected={view === 'mappings'} className={view === 'mappings' ? 'active' : ''} onClick={() => onViewChange('mappings')}>外部映射</button></div>
+        {view === 'skills' && <><button className="button secondary" onClick={() => importMutation.mutate({ kind: 'skill-markdown' })} disabled={importMutation.isPending}><FileCode2 size={17}/> 导入 SKILL.md</button><button className="button primary" onClick={() => importMutation.mutate({ kind: 'skill-zip' })} disabled={importMutation.isPending}><Import size={17}/> 导入 Skill zip</button></>}
       </div>
     </header>
-    <div className="search-row"><Search size={19}/><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选 Skill 名称或能力描述…" aria-label="筛选 Skill" />{filter && <IconButton label="清空筛选" onClick={() => setFilter('')}><X size={16}/></IconButton>}</div>
-    {importError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{importError.message}</div>}
-    <div className="content-heading"><div><h2>已安装 Skills</h2><span>{visible.length} 个能力包</span></div><IconButton label="刷新 Skills" onClick={() => skills.refetch()}><RefreshCw size={17}/></IconButton></div>
-    <section className="result-list" aria-live="polite">
-      {skills.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入 Skills</div>}
-      {visible.map((item) => <button className={`document-row ${selectedId === item.id ? 'active' : ''}`} key={item.id} onClick={() => onSelect(item.id)}><span className="file-icon"><FolderArchive size={19}/></span><span className="document-copy"><strong>{item.name}</strong><small>{item.description}</small></span><span className={`status-pill ${item.status}`}>{item.status === 'ready' ? `${item.fileCount} 个文件` : '校验失败'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}
-      {!skills.isLoading && visible.length === 0 && <Empty icon={<FolderArchive size={25}/>} title="还没有 Skill" text="导入 SKILL.md 或 Skill zip，建立可复用的 Agent 能力。" />}
-    </section>
-    <footer className="status-bar" role="status" aria-live="polite"><div>{importMutation.isPending ? <><LoaderCircle className="spin" size={13}/> 正在导入 Skill</> : <><CheckCircle2 size={13}/> Skill 目录已就绪</>}</div><div>标准入口 · 按需加载<span className="separator"/>v0.1.0</div></footer>
+    {view === 'skills' ? <><div className="search-row"><Search size={19}/><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选 Skill 名称或能力描述…" aria-label="筛选 Skill" />{filter && <IconButton label="清空筛选" onClick={() => setFilter('')}><X size={16}/></IconButton>}</div>{importError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{importError.message}</div>}<div className="content-heading"><div><h2>已安装 Skills</h2><span>{visible.length} 个能力包</span></div><IconButton label="刷新 Skills" onClick={() => skills.refetch()}><RefreshCw size={17}/></IconButton></div><section className="result-list" aria-live="polite">{skills.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入 Skills</div>}{visible.map((item) => <button className={`document-row ${selectedId === item.id ? 'active' : ''}`} key={item.id} onClick={() => onSelect(item.id)}><span className="file-icon"><FolderArchive size={19}/></span><span className="document-copy"><strong>{item.name}</strong><small>{item.description}</small></span><span className={`status-pill ${item.status}`}>{item.status === 'ready' ? `${item.fileCount} 个文件` : '校验失败'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}{!skills.isLoading && visible.length === 0 && <Empty icon={<FolderArchive size={25}/>} title="还没有 Skill" text="导入 SKILL.md 或 Skill zip，建立可复用的 Agent 能力。" />}</section></> : <SkillMappingsWorkspace skills={skills.data ?? []} selectedTargetId={selectedTargetId} onTargetSelect={onTargetSelect} />}
+    <footer className="status-bar" role="status" aria-live="polite"><div>{view === 'skills' ? importMutation.isPending ? <><LoaderCircle className="spin" size={13}/> 正在导入 Skill</> : <><CheckCircle2 size={13}/> Skill 目录已就绪</> : <><Link2 size={13}/> 映射状态由外部目录验证</>}</div><div>{view === 'skills' ? '标准入口 · 按需加载' : '真实目录软链接 · 不复制内容'}<span className="separator"/>v0.1.0</div></footer>
   </>
 }
 

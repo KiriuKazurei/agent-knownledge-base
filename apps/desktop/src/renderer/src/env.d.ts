@@ -4,6 +4,7 @@ interface Window {
     runtimeConfig(): Promise<RuntimeConfig>
     setTitleBarTheme(theme: 'light' | 'dark'): Promise<void>
     selectFiles(kind?: string): Promise<string[]>
+    selectDirectory(): Promise<string>
     openPath(path: string): Promise<string>
     openExternal(url: string): Promise<void>
     onBackendExit(callback: (code: number | null) => void): () => void

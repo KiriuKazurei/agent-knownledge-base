@@ -173,6 +173,10 @@ app.whenReady().then(async () => {
     })
     return result.canceled ? [] : result.filePaths
   })
+  ipcMain.handle('dialog:select-directory', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
+    return result.canceled ? '' : (result.filePaths[0] ?? '')
+  })
   ipcMain.handle('shell:open-path', async (_event, target: string) => shell.openPath(target))
   ipcMain.handle('shell:open-external', async (_event, target: string) => {
     const parsed = new URL(target)

@@ -105,6 +105,19 @@ func (s *Store) migrate() error {
 			relation TEXT NOT NULL CHECK(relation IN ('skill_uses_library','library_requires_skill')),
 			PRIMARY KEY(skill_id, library_id, relation)
 		)`,
+		`CREATE TABLE IF NOT EXISTS skill_mapping_targets (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('agent', 'project')),
+			directory_path TEXT NOT NULL UNIQUE, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_verified_at TEXT
+		)`,
+		`CREATE TABLE IF NOT EXISTS skill_mappings (
+			target_id TEXT NOT NULL REFERENCES skill_mapping_targets(id) ON DELETE CASCADE,
+			skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+			link_name TEXT NOT NULL, link_path TEXT NOT NULL, status TEXT NOT NULL,
+			error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			last_verified_at TEXT, PRIMARY KEY(target_id, skill_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_skill_mappings_skill ON skill_mappings(skill_id)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
 			message TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -1138,6 +1151,13 @@ func (s *Store) DeleteSkill(ctx context.Context, id string) error {
 	}
 	if systemSkill {
 		return ErrSystemSkillProtected
+	}
+	var mappingCount int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM skill_mappings WHERE skill_id=?`, id).Scan(&mappingCount); err != nil {
+		return err
+	}
+	if mappingCount > 0 {
+		return ErrSkillMapped
 	}
 	result, err := s.DB.ExecContext(ctx, "DELETE FROM skills WHERE id=?", id)
 	if err != nil {

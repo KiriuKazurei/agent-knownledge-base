@@ -190,6 +190,130 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Skill'}
+  /skill-mapping-targets:
+    get:
+      operationId: listSkillMappingTargets
+      responses:
+        '200':
+          description: External Agent or project Skill directories and mappings
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/SkillMappingTarget'}}
+    post:
+      operationId: createSkillMappingTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateSkillMappingTargetRequest'}
+      responses:
+        '201':
+          description: Created and verified mapping target
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
+  /skill-mapping-targets/{targetId}:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      operationId: updateSkillMappingTarget
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateSkillMappingTargetRequest'}
+      responses:
+        '200':
+          description: Updated mapping target
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
+    delete:
+      operationId: deleteSkillMappingTarget
+      responses:
+        '204': {description: Deleted after safe link cleanup}
+  /skill-mapping-targets/{targetId}/skills:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: addSkillMappings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkillMappingIDsRequest'}
+      responses:
+        '200':
+          description: Updated mapping target
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
+  /skill-mapping-targets/{targetId}/skills/{skillId}:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      operationId: removeSkillMapping
+      responses:
+        '204': {description: Removed after safe link cleanup}
+  /skill-mapping-targets/{targetId}/skills/{skillId}/record:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    delete:
+      operationId: forgetSkillMapping
+      responses:
+        '204': {description: Forgotten without touching the external object}
+  /skill-mapping-targets/{targetId}/verify:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: verifySkillMappingTarget
+      responses:
+        '200':
+          description: Read-only file-system verification result
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
+  /skill-mapping-targets/{targetId}/skills/{skillId}/repair:
+    parameters:
+      - in: path
+        name: targetId
+        required: true
+        schema: {type: string, format: uuid}
+      - in: path
+        name: skillId
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: repairSkillMapping
+      responses:
+        '200':
+          description: Updated mapping target after repairing a missing link
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
   /skills/{skillId}/manifest:
     parameters:
       - in: path
@@ -779,6 +903,54 @@ components:
       properties:
         usesLibraryIds: {type: array, items: {type: string, format: uuid}}
         requiresLibraryIds: {type: array, items: {type: string, format: uuid}}
+    SkillMappingTarget:
+      type: object
+      required: [id, name, kind, directoryPath, status, mappings, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 200}
+        kind: {enum: [agent, project]}
+        directoryPath: {type: string, description: Normalized absolute Windows directory path}
+        status: {enum: [pending, ready, partial, missing, conflict, invalid, permission_required]}
+        error: {type: string}
+        mappings: {type: array, items: {$ref: '#/components/schemas/SkillMapping'}}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        lastVerifiedAt: {type: string, format: date-time}
+    SkillMapping:
+      type: object
+      required: [targetId, skillId, skillName, sourcePath, linkName, linkPath, status, createdAt, updatedAt]
+      properties:
+        targetId: {type: string, format: uuid}
+        skillId: {type: string, format: uuid}
+        skillName: {type: string}
+        sourcePath: {type: string}
+        linkName: {type: string}
+        linkPath: {type: string}
+        status: {enum: [pending, ready, missing, conflict, permission_required, invalid]}
+        error: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+        lastVerifiedAt: {type: string, format: date-time}
+    CreateSkillMappingTargetRequest:
+      type: object
+      required: [name, kind, directoryPath]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        kind: {enum: [agent, project]}
+        directoryPath: {type: string, description: Existing absolute Windows directory path}
+        skillIds: {type: array, items: {type: string, format: uuid}, uniqueItems: true}
+    UpdateSkillMappingTargetRequest:
+      type: object
+      required: [name, kind]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        kind: {enum: [agent, project]}
+    SkillMappingIDsRequest:
+      type: object
+      required: [skillIds]
+      properties:
+        skillIds: {type: array, minItems: 1, items: {type: string, format: uuid}, uniqueItems: true}
     SavedSearch:
       type: object
       required: [id, name, query, libraryIds, tags]

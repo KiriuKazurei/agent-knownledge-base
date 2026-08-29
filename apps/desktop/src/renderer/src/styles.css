@@ -282,3 +282,36 @@ kbd { padding: 2px 6px; color: var(--text-faint); background: var(--surface-mute
 .token-scope-grid { display: grid; gap: 2px; margin: 15px 0; padding: 10px 12px; background: var(--surface-muted); border: 1px solid var(--border); border-radius: 9px; }
 .token-scope-grid > strong { margin-bottom: 4px; font-size: 12px; }
 @media (max-width: 880px) { .review-layout { grid-template-columns: 1fr; } }
+.segmented-control { display: inline-flex; align-items: center; padding: 3px; gap: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
+.segmented-control button { min-height: 29px; padding: 0 9px; color: var(--text-muted); background: transparent; border: 0; border-radius: 6px; font-size: 11px; cursor: pointer; }
+.segmented-control button.active { color: var(--text); background: var(--surface); box-shadow: 0 1px 3px color-mix(in srgb, var(--shadow) 18%, transparent); }
+.segmented-control button:focus-visible, .mapping-create-form button:focus-visible, .mapping-row button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.mapping-create-form { margin: 0 22px 14px; padding: 16px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface-muted); }
+.mapping-form-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mapping-form-heading h2 { margin: 3px 0 0; font-size: 17px; }
+.mapping-directory-button { align-self: flex-start; margin-top: 2px; }
+.mapping-skill-picker { display: grid; gap: 4px; max-height: 210px; margin: 0 0 12px; padding: 10px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.mapping-skill-picker legend { padding: 0 4px; color: var(--text-muted); font-size: 11px; font-weight: 700; }
+.mapping-skill-picker .switch-row { padding: 7px 4px; }
+.mapping-skill-picker .switch-row small { display: block; max-width: 520px; overflow: hidden; color: var(--text-faint); text-overflow: ellipsis; white-space: nowrap; }
+.mapping-count { flex: 0 0 auto; color: var(--text-faint); font-size: 11px; }
+.mapping-detail-shell { overflow: auto; }
+.mapping-path-card { display: grid; gap: 6px; margin: 12px 16px 0; padding: 11px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); }
+.mapping-path-card strong { color: var(--text-muted); font-size: 11px; }
+.mapping-path-card code { color: var(--accent-text); font-size: 11px; overflow-wrap: anywhere; }
+.mapping-list { display: grid; gap: 10px; margin: 16px; }
+.mapping-list h3 { margin: 0; font-size: 13px; }
+.mapping-row { display: grid; gap: 8px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-muted); }
+.mapping-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mapping-row-heading > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mapping-row-heading strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mapping-link-name { color: var(--text-faint); font: 11px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.mapping-row dl { display: grid; gap: 5px; margin: 0; }
+.mapping-row dl > div { display: grid; grid-template-columns: 58px 1fr; gap: 8px; min-width: 0; }
+.mapping-row dt { color: var(--text-faint); font-size: 10px; }
+.mapping-row dd { min-width: 0; margin: 0; }
+.mapping-row dd code { display: block; overflow: hidden; color: var(--text-muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.mapping-row-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.mapping-row-actions .button { min-height: 29px; padding: 0 9px; font-size: 11px; }
+.mapping-detail-note { margin: 0 16px 16px; color: var(--text-faint); font-size: 10px; }
+@media (max-width: 900px) { .workspace-header .header-actions { flex-wrap: wrap; justify-content: flex-end; }.mapping-create-form { margin-left: 12px; margin-right: 12px; }.mapping-row-heading { align-items: flex-start; flex-direction: column; } }

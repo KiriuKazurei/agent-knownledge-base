@@ -1,6 +1,6 @@
 # Skill 外部 Agent/项目映射计划
 
-> 状态：规划已形成，代码实现待后续执行  
+> 状态：后端、桌面 API 与 React 工作台已实现；真实外部 Agent 目录的手工验收待执行
 > 适用范围：Windows 10/11 x64、本地桌面会话、全局 Skill 管理
 
 ## 1. 目标与现状
@@ -131,6 +131,7 @@ skill_mappings(
 - `PATCH /skill-mapping-targets/{id}`：修改目标名称和类型，不允许静默修改目录路径。
 - `POST /skill-mapping-targets/{id}/skills`：追加一组 Skill 映射。
 - `DELETE /skill-mapping-targets/{id}/skills/{skillId}`：解除单项映射。
+- `DELETE /skill-mapping-targets/{id}/skills/{skillId}/record`：只遗忘映射记录，不触碰外部冲突对象。
 - `POST /skill-mapping-targets/{id}/verify`：重新检查目标和全部链接。
 - `POST /skill-mapping-targets/{id}/skills/{skillId}/repair`：修复单个缺失链接。
 - `DELETE /skill-mapping-targets/{id}`：删除目标记录，并按安全规则清理可确认归属的链接。
@@ -144,6 +145,7 @@ skill_mappings(
 - `skill_mapping_conflict`
 - `skill_mapping_permission_required`
 - `skill_mapping_link_invalid`
+- `skill_mapping_skill_not_found`
 - `skill_mapping_skill_in_use`
 
 ## 7. Electron 与桌面端界面
@@ -167,12 +169,12 @@ Electron 主进程新增目录选择器 IPC，返回用户选择的既有目录�
 
 ## 8. 实施顺序
 
-1. 增加 model、SQLite migration、映射状态和错误码。
-2. 实现路径验证、软链接创建/读取/删除和批量回滚。
-3. 实现桌面 API、审计记录、OpenAPI 契约和删除 Skill 的映射保护。
-4. 增加 Electron 目录选择 IPC 和 React API 类型。
-5. 在 Skills 工作台加入外部映射视图和错误/加载/空状态。
-6. 增加自动化测试，再进行真实外部 Skills 目录手工验收。
+1. 增加 model、SQLite migration、映射状态和错误码。已完成。
+2. 实现路径验证、软链接创建/读取/删除和批量回滚。已完成。
+3. 实现桌面 API、审计记录、OpenAPI 契约和删除 Skill 的映射保护。已完成。
+4. 增加 Electron 目录选择 IPC 和 React API 类型。已完成。
+5. 在 Skills 工作台加入外部映射视图和错误/加载/空状态。已完成。
+6. 增加自动化测试，再进行真实外部 Skills 目录手工验收。自动化测试已完成；真实外部目录手工验收待执行。
 
 ## 9. 测试与验收
 

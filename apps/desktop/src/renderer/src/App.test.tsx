@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
 import { App, MarkdownContent } from './App'
@@ -9,12 +9,12 @@ vi.mock('./api', () => ({
   getRuntime: vi.fn(async () => ({apiBaseUrl:'http://127.0.0.1:1',desktopToken:'x',dataRoot:'data',version:'test'})),
   client: {
     libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []),
-    document: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
+    document: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
     providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), backup: vi.fn(), createSavedSearch: vi.fn(), deleteSavedSearch: vi.fn()
   }
 }))
 
-Object.defineProperty(window, 'kah', { value: { runtimeConfig: vi.fn(), setTitleBarTheme: vi.fn(), selectFiles: vi.fn(async () => []), openPath: vi.fn(), openExternal: vi.fn(), onBackendExit: vi.fn(() => () => {}) } })
+Object.defineProperty(window, 'kah', { value: { runtimeConfig: vi.fn(), setTitleBarTheme: vi.fn(), selectFiles: vi.fn(async () => []), selectDirectory: vi.fn(async () => ''), openPath: vi.fn(), openExternal: vi.fn(), onBackendExit: vi.fn(() => () => {}) } })
 Object.defineProperty(window, 'matchMedia', { value: vi.fn(() => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() })) })
 
 test('renders the accessible knowledge workbench', async () => {
@@ -34,6 +34,26 @@ test('shows failed Skill imports in the management workspace', async () => {
   fireEvent.click(screen.getByRole('button', { name: '导入 SKILL.md' }))
 
   expect(await screen.findByRole('alert')).toHaveTextContent('invalid skill package')
+})
+test('creates an external Skill mapping target from the secondary view', async () => {
+  const target = { id: 'target-1', name: '本机 Agent', kind: 'agent' as const, directoryPath: 'C:\\agent\\skills', status: 'ready' as const, mappings: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+  vi.mocked(client.skillMappingTargets).mockResolvedValue([target])
+  vi.mocked(client.skillMappingTarget).mockResolvedValue(target)
+  vi.mocked(client.createSkillMappingTarget).mockResolvedValue(target)
+  vi.mocked(window.kah.selectDirectory).mockResolvedValue('C:\\agent\\skills')
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  fireEvent.click(screen.getAllByRole('button', { name: 'SkillsAgent 能力包' })[0])
+  fireEvent.click(screen.getByRole('tab', { name: '外部映射' }))
+  expect(await screen.findByText('本机 Agent')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '新建映射' }))
+  fireEvent.change(screen.getByLabelText('目标名称'), { target: { value: '新 Agent' } })
+  fireEvent.click(screen.getByRole('button', { name: '选择目录' }))
+  expect(await screen.findByDisplayValue('C:\\agent\\skills')).toBeInTheDocument()
+  expect(screen.getByDisplayValue('新 Agent')).toBeInTheDocument()
+  const createButton = screen.getByRole('button', { name: '创建映射' })
+  expect(createButton).not.toBeDisabled()
+  fireEvent.click(createButton)
+  await waitFor(() => expect(client.createSkillMappingTarget).toHaveBeenCalledWith({ name: '新 Agent', kind: 'agent', directoryPath: 'C:\\agent\\skills', skillIds: [] }))
 })
 test('routes Chinese Markdown links through the link handler', () => {
   const onLink = vi.fn()

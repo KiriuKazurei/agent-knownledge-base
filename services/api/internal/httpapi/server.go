@@ -108,6 +108,15 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/skills/import", s.importSkill)
 	admin.PUT("/skills/:id/links", s.updateSkillLinks)
 	admin.DELETE("/skills/:id", s.deleteSkill)
+	admin.GET("/skill-mapping-targets", s.listSkillMappingTargets)
+	admin.POST("/skill-mapping-targets", s.createSkillMappingTarget)
+	admin.PATCH("/skill-mapping-targets/:id", s.updateSkillMappingTarget)
+	admin.POST("/skill-mapping-targets/:id/skills", s.addSkillMappings)
+	admin.DELETE("/skill-mapping-targets/:id/skills/:skillId", s.removeSkillMapping)
+	admin.DELETE("/skill-mapping-targets/:id/skills/:skillId/record", s.forgetSkillMapping)
+	admin.POST("/skill-mapping-targets/:id/verify", s.verifySkillMappingTarget)
+	admin.POST("/skill-mapping-targets/:id/skills/:skillId/repair", s.repairSkillMapping)
+	admin.DELETE("/skill-mapping-targets/:id", s.deleteSkillMappingTarget)
 	admin.POST("/imports/files", s.importFiles)
 	admin.POST("/imports/url", s.importURL)
 	admin.GET("/jobs", s.listJobs)
@@ -530,6 +539,10 @@ func (s *Server) deleteSkill(c *gin.Context) {
 	err := s.Store.DeleteSkill(operationContext(c), c.Param("id"))
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, http.StatusNotFound, "skill_not_found", "Skill not found", false)
+		return
+	}
+	if errors.Is(err, storage.ErrSkillMapped) {
+		s.problem(c, http.StatusConflict, "skill_mapping_skill_in_use", "Skill must be unmapped before it can be deleted", false)
 		return
 	}
 	if err != nil {

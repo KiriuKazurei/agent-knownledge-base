@@ -1,4 +1,4 @@
-import type { AgentToken, Document, DocumentDetail, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SourceWatch, VirtualFolder } from './types'
+import type { AgentToken, Document, DocumentDetail, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SkillMappingTarget, SourceWatch, VirtualFolder } from './types'
 
 let runtime: RuntimeConfig | undefined
 export async function getRuntime(): Promise<RuntimeConfig> { runtime ??= await window.kah.runtimeConfig(); return runtime }
@@ -48,6 +48,16 @@ export const client = {
   updateSkillLinks: (id: string, usesLibraryIds: string[], requiresLibraryIds: string[]) => api<Skill>(`/skills/${id}/links`, { method: 'PUT', body: JSON.stringify({ usesLibraryIds, requiresLibraryIds }) }),
   deleteSkill: (id: string) => api<void>(`/skills/${id}`, { method: 'DELETE' }),
   skillManifest: (id: string) => api<SkillManifest>(`/skills/${id}/manifest`),
+  skillMappingTargets: () => api<SkillMappingTarget[]>('/skill-mapping-targets'),
+  skillMappingTarget: (id: string) => api<SkillMappingTarget>(`/skill-mapping-targets/${id}`),
+  createSkillMappingTarget: (input: { name: string; kind: 'agent'|'project'; directoryPath: string; skillIds: string[] }) => api<SkillMappingTarget>('/skill-mapping-targets', { method: 'POST', body: JSON.stringify(input) }),
+  updateSkillMappingTarget: (id: string, input: { name: string; kind: 'agent'|'project' }) => api<SkillMappingTarget>(`/skill-mapping-targets/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  addSkillMappings: (id: string, skillIds: string[]) => api<SkillMappingTarget>(`/skill-mapping-targets/${id}/skills`, { method: 'POST', body: JSON.stringify({ skillIds }) }),
+  verifySkillMappingTarget: (id: string) => api<SkillMappingTarget>(`/skill-mapping-targets/${id}/verify`, { method: 'POST' }),
+  repairSkillMapping: (targetId: string, skillId: string) => api<SkillMappingTarget>(`/skill-mapping-targets/${targetId}/skills/${skillId}/repair`, { method: 'POST' }),
+  removeSkillMapping: (targetId: string, skillId: string) => api<void>(`/skill-mapping-targets/${targetId}/skills/${skillId}`, { method: 'DELETE' }),
+  forgetSkillMapping: (targetId: string, skillId: string) => api<void>(`/skill-mapping-targets/${targetId}/skills/${skillId}/record`, { method: 'DELETE' }),
+  deleteSkillMappingTarget: (id: string) => api<void>(`/skill-mapping-targets/${id}`, { method: 'DELETE' }),
   jobs: () => api<Job[]>('/jobs'),
   savedSearches: () => api<SavedSearch[]>('/saved-searches'),
   folders: (libraryId: string) => api<VirtualFolder[]>(`/folders?libraryId=${encodeURIComponent(libraryId)}`),
