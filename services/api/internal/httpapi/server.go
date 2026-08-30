@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/config"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/model"
@@ -275,6 +276,8 @@ func (s *Server) updateLibrary(c *gin.Context) {
 		Name                       *string `json:"name"`
 		Description                *string `json:"description"`
 		AllowRemoteModels          *bool   `json:"allowRemoteModels"`
+		AutoSummarizeImports       *bool   `json:"autoSummarizeImports"`
+		SummaryProviderID          *string `json:"summaryProviderId"`
 		AutoReviewAgentSubmissions *bool   `json:"autoReviewAgentSubmissions"`
 		ReviewProviderID           *string `json:"reviewProviderId"`
 	}
@@ -297,6 +300,33 @@ func (s *Server) updateLibrary(c *gin.Context) {
 	autoReview := current.AutoReviewAgentSubmissions
 	if input.AutoReviewAgentSubmissions != nil {
 		autoReview = *input.AutoReviewAgentSubmissions
+	}
+	autoSummarize := current.AutoSummarizeImports
+	if input.AutoSummarizeImports != nil {
+		autoSummarize = *input.AutoSummarizeImports
+	}
+	summaryProviderID := current.SummaryProviderID
+	if input.SummaryProviderID != nil {
+		summaryProviderID = strings.TrimSpace(*input.SummaryProviderID)
+	}
+	if autoSummarize && summaryProviderID == "" {
+		s.problem(c, 400, "summary_provider_required", "summaryProviderId is required when automatic import summarization is enabled", false)
+		return
+	}
+	if autoSummarize {
+		provider, providerErr := s.Store.GetProvider(operationContext(c), summaryProviderID)
+		if errors.Is(providerErr, sql.ErrNoRows) {
+			s.problem(c, 400, "summary_provider_not_found", "summary provider was not found", false)
+			return
+		}
+		if providerErr != nil {
+			s.problem(c, 500, "database_error", providerErr.Error(), true)
+			return
+		}
+		if !provider.Local && !allowRemote {
+			s.problem(c, 400, "remote_summary_not_allowed", "remote summarization requires allowRemoteModels", false)
+			return
+		}
 	}
 	reviewProviderID := current.ReviewProviderID
 	if input.ReviewProviderID != nil {
@@ -321,7 +351,7 @@ func (s *Server) updateLibrary(c *gin.Context) {
 			return
 		}
 	}
-	item, err := s.Store.UpdateLibrary(operationContext(c), c.Param("id"), input.Name, input.Description, input.AllowRemoteModels, input.AutoReviewAgentSubmissions, input.ReviewProviderID)
+	item, err := s.Store.UpdateLibrary(operationContext(c), c.Param("id"), input.Name, input.Description, input.AllowRemoteModels, input.AutoSummarizeImports, input.AutoReviewAgentSubmissions, input.SummaryProviderID, input.ReviewProviderID)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, 404, "library_not_found", "Library not found", false)
 		return
@@ -795,7 +825,134 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 			return
 		}
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported "+doc.Title)
+	summaryJob, summaryQueued, referenceCreated, processingErr := s.queueImportedKnowledgeProcessing(ctx, doc.ID)
+	if processingErr != nil {
+		s.failJob(ctx, jobID, processingErr)
+		return
+	}
+	message := "Imported " + doc.Title
+	if summaryQueued {
+		message += "; KAH summary job " + summaryJob.ID + " queued"
+	} else if referenceCreated {
+		message += "; KAH draft (reference) is awaiting review"
+	} else {
+		message += "; no KAH processing was queued"
+	}
+	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+}
+
+const importedReferenceMaxRunes = 64_000
+
+// createImportedDocumentDraft deliberately creates a reference entry rather
+// than pretending that raw source material has already been model-summarized.
+// A reviewer can publish it as a traceable KAH knowledge entry or reject it.
+func (s *Server) createImportedDocumentDraft(ctx context.Context, documentID string) (model.KAHSubmission, bool, error) {
+	detail, err := s.Store.GetDocument(ctx, documentID)
+	if err != nil {
+		return model.KAHSubmission{}, false, err
+	}
+	extract := importedReferenceExtract(detail.Preview, importedReferenceMaxRunes)
+	if extract == "" {
+		return model.KAHSubmission{}, false, nil
+	}
+	title := strings.TrimSpace(strings.TrimSuffix(detail.Title, filepath.Ext(detail.Title)))
+	if title == "" {
+		title = "Imported source material"
+	}
+	title = trimRunes(title, 200)
+	language := importedReferenceLanguage(extract)
+	description := "Traceable reference draft created from imported source material. Review the original document before publishing."
+	heading := "Imported source material"
+	intro := "This reference preserves extracted material; it is not an AI summary. Review the cited source before publishing."
+	if language == "zh-CN" {
+		description = "由导入资料自动创建的可追溯参考草稿；发布前请核对原始文档。"
+		heading = "导入资料"
+		intro = "此参考条目保留导入资料的提取内容，不代表模型已完成总结；发布前请核对引用的原始资料。"
+	}
+	chunkIDs := make([]string, 0, min(8, len(detail.Preview)))
+	for _, chunk := range detail.Preview {
+		if len(chunkIDs) == cap(chunkIDs) {
+			break
+		}
+		chunkIDs = append(chunkIDs, chunk.ID)
+	}
+	payload := model.KnowledgePayload{
+		Schema:          storage.KAHKnowledgeSchema,
+		Type:            "reference",
+		Subtype:         "document:imported-source",
+		Title:           title,
+		Description:     description,
+		Language:        language,
+		Tags:            []string{"imported-source", "reference"},
+		DuplicateIntent: "independent",
+		Sections: []model.KnowledgeSection{{
+			ID: "overview", Heading: heading, Content: intro + "[^source]\n\n" + extract,
+		}},
+		Sources: []model.KnowledgeSource{{
+			ID: "source", Resource: storage.DocumentURI(detail.ID), Title: detail.Title,
+			Locator:  map[string]any{"documentId": detail.ID, "chunkIds": chunkIDs},
+			Snapshot: model.KnowledgeSourceSnapshot{Status: "captured", ContentHash: detail.ContentHash, CapturedAt: time.Now().UTC()},
+		}},
+		Generated: model.KnowledgeGenerated{By: "desktop/import", At: time.Now().UTC()},
+		Derivation: &model.KnowledgeDerivation{
+			Premises: []string{storage.DocumentURI(detail.ID)}, Method: "document-import", Conclusion: description,
+			Limitations: "Raw extracted source material; no semantic summary was generated.",
+			Uncertainty: "Extraction fidelity depends on the imported document format.",
+		},
+	}
+	if language == "zh-CN" {
+		payload.Derivation.Limitations = "保留的是原始资料提取内容，尚未生成语义总结。"
+		payload.Derivation.Uncertainty = "提取完整度取决于导入资料的格式。"
+	}
+	submission, _, err := s.Store.CreateKnowledgeDraft(ctx, storage.KnowledgeDraftInput{
+		LibraryID: detail.LibraryID, ClientSubmissionID: "document-import:" + detail.ID + ":" + detail.ContentHash,
+		Mode: "create", Payload: payload, RequireSources: true,
+	})
+	if err != nil {
+		return model.KAHSubmission{}, false, err
+	}
+	return submission, true, nil
+}
+
+func importedReferenceExtract(chunks []model.Chunk, maximum int) string {
+	var builder strings.Builder
+	remaining := maximum
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(chunk.Text)
+		if text == "" || remaining <= 0 {
+			continue
+		}
+		part := trimRunes(text, remaining)
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(part)
+		remaining -= len([]rune(part))
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func importedReferenceLanguage(value string) string {
+	for _, character := range value {
+		if unicode.Is(unicode.Han, character) {
+			return "zh-CN"
+		}
+	}
+	return "en"
+}
+
+func trimRunes(value string, maximum int) string {
+	if maximum <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maximum {
+		return value
+	}
+	if maximum == 1 {
+		return "…"
+	}
+	return strings.TrimSpace(string(runes[:maximum-1])) + "…"
 }
 func (s *Server) parseDocument(ctx context.Context, doc model.Document, path string) ([]model.Chunk, error) {
 	if s.Worker != nil {

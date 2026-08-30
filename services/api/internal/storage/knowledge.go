@@ -44,6 +44,27 @@ var knowledgeRelationTypes = map[string]bool{
 
 func KnowledgeURI(id string) string { return "kah://knowledge/" + id }
 
+// DocumentURI identifies an imported source document. It is immutable in
+// practice because every KAH source also pins the document content hash in its
+// snapshot. The URI deliberately carries no filesystem path.
+func DocumentURI(id string) string { return "kah://document/" + id }
+
+func ParseDocumentURI(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	const prefix = "kah://document/"
+	if !strings.HasPrefix(value, prefix) {
+		return "", fmt.Errorf("document URI must start with %s", prefix)
+	}
+	id := strings.TrimPrefix(value, prefix)
+	if strings.ContainsAny(id, "?#") {
+		return "", errors.New("document URI does not support a query or fragment")
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return "", errors.New("document URI contains an invalid UUID")
+	}
+	return id, nil
+}
+
 func ParseKnowledgeURI(value string) (id string, revision int, section string, err error) {
 	value = strings.TrimSpace(value)
 	fragment := ""
@@ -167,20 +188,26 @@ func ValidateKnowledgePayload(payload model.KnowledgePayload, requireSources boo
 			add("SCHEMA_INVALID", "sources", "source IDs must be unique")
 		}
 		sourceIDs[source.ID] = true
-		if !strings.HasPrefix(source.Resource, "https://") && !strings.HasPrefix(source.Resource, "kah://knowledge/") {
-			add("SCHEMA_INVALID", "sources", "sources must be https URLs or KAH knowledge URIs")
-		}
-		if strings.HasPrefix(source.Resource, "https://") {
+		switch {
+		case strings.HasPrefix(source.Resource, "https://"):
 			parsed, parseErr := url.Parse(source.Resource)
 			if parseErr != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.User != nil {
 				add("SCHEMA_INVALID", "sources", "HTTPS sources must be valid URLs without user information")
 			}
-		}
-		if strings.HasPrefix(source.Resource, "kah://knowledge/") {
+		case strings.HasPrefix(source.Resource, "kah://knowledge/"):
 			_, exactRevision, _, uriErr := ParseKnowledgeURI(source.Resource)
 			if uriErr != nil || exactRevision == 0 {
 				add("SCHEMA_INVALID", "sources", "KAH sources must pin an exact revision")
 			}
+		case strings.HasPrefix(source.Resource, "kah://document/"):
+			if _, uriErr := ParseDocumentURI(source.Resource); uriErr != nil {
+				add("SCHEMA_INVALID", "sources", uriErr.Error())
+			}
+			if source.Snapshot.ContentHash == "" {
+				add("SCHEMA_INVALID", "sources", "document sources must pin snapshot.content_hash")
+			}
+		default:
+			add("SCHEMA_INVALID", "sources", "sources must be https URLs, KAH knowledge URIs, or imported document URIs")
 		}
 	}
 	if requireSources && len(payload.Sources) == 0 {
@@ -268,16 +295,17 @@ func (s *Store) CreateKnowledgeDraft(ctx context.Context, input KnowledgeDraftIn
 		return model.KAHSubmission{Validation: validation}, false, errors.New("knowledge payload is invalid")
 	}
 	payload := validation.Normalized
-	if input.TokenID != "" {
-		var existingID string
-		err := s.DB.QueryRowContext(ctx, `SELECT id FROM kah_submissions WHERE submitted_by_token_id=? AND client_submission_id=?`, input.TokenID, input.ClientSubmissionID).Scan(&existingID)
-		if err == nil {
-			item, getErr := s.GetKAHSubmission(ctx, existingID)
-			return item, true, getErr
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return model.KAHSubmission{}, false, err
-		}
+	if err := s.validateDocumentSources(ctx, input.LibraryID, payload); err != nil {
+		return model.KAHSubmission{Validation: validation}, false, err
+	}
+	var existingID string
+	err := s.DB.QueryRowContext(ctx, `SELECT id FROM kah_submissions WHERE library_id=? AND submitted_by_token_id=? AND client_submission_id=?`, input.LibraryID, input.TokenID, input.ClientSubmissionID).Scan(&existingID)
+	if err == nil {
+		item, getErr := s.GetKAHSubmission(ctx, existingID)
+		return item, true, getErr
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return model.KAHSubmission{}, false, err
 	}
 	knowledgeID := ""
 	revision := 1
@@ -441,6 +469,35 @@ func (s *Store) CreateKnowledgeDraft(ctx context.Context, input KnowledgeDraftIn
 		return model.KAHSubmission{}, false, err
 	}
 	return submission, false, nil
+}
+
+func (s *Store) validateDocumentSources(ctx context.Context, libraryID string, payload model.KnowledgePayload) error {
+	for _, source := range payload.Sources {
+		if !strings.HasPrefix(source.Resource, "kah://document/") {
+			continue
+		}
+		documentID, err := ParseDocumentURI(source.Resource)
+		if err != nil {
+			return err
+		}
+		detail, err := s.GetDocument(ctx, documentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("document source %s was not found", source.ID)
+		}
+		if err != nil {
+			return fmt.Errorf("read document source %s: %w", source.ID, err)
+		}
+		if detail.LibraryID != libraryID {
+			return fmt.Errorf("document source %s belongs to another library", source.ID)
+		}
+		if detail.Status != "ready" {
+			return fmt.Errorf("document source %s is not ready", source.ID)
+		}
+		if source.Snapshot.ContentHash != detail.ContentHash {
+			return fmt.Errorf("document source %s snapshot does not match the current content", source.ID)
+		}
+	}
+	return nil
 }
 
 func knowledgeFlags(payload model.KnowledgePayload) []string {
@@ -912,6 +969,83 @@ func (s *Store) ReviewKAHSubmission(ctx context.Context, id, reviewer, decision,
 		return item, err
 	}
 	return s.GetKAHSubmission(ctx, id)
+}
+
+// MarkKAHSubmissionReviewing claims a KAH v1 draft for the automatic review
+// worker. It intentionally uses the KAH state machine instead of the legacy
+// knowledge_submissions table, whose IDs and review rules are incompatible.
+func (s *Store) MarkKAHSubmissionReviewing(ctx context.Context, id string) (bool, error) {
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `UPDATE kah_submissions SET review_status='reviewing',updated_at=? WHERE id=? AND review_status IN ('pending_review','reviewing')`, stamp, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	return count == 1, err
+}
+
+// ResetKAHSubmissionReview returns a claimed draft to the human review queue
+// when an automatic reviewer cannot complete. The durable job remains failed
+// and can be diagnosed or retried without losing the candidate.
+func (s *Store) ResetKAHSubmissionReview(ctx context.Context, id string) error {
+	_, stamp := now()
+	_, err := s.DB.ExecContext(ctx, `UPDATE kah_submissions SET review_status='pending_review',updated_at=? WHERE id=? AND review_status='reviewing'`, stamp, id)
+	return err
+}
+
+// RecordKAHSubmissionReview persists an automatic KAH review and transitions
+// the immutable revision to the corresponding workflow state. A model may
+// approve, reject, or defer to a human; it can never publish directly.
+func (s *Store) RecordKAHSubmissionReview(ctx context.Context, id, reviewer, decision, reason string) (bool, error) {
+	if decision != "approve" && decision != "reject" && decision != "needs_human" {
+		return false, errors.New("invalid KAH review decision")
+	}
+	item, err := s.GetKAHSubmission(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if item.ReviewStatus != "pending_review" && item.ReviewStatus != "reviewing" {
+		return false, nil
+	}
+	knowledgeID, _, _, parseErr := ParseKnowledgeURI(item.KnowledgeURI)
+	if parseErr != nil {
+		return false, parseErr
+	}
+	status := "pending_review"
+	revisionStatus := "draft"
+	if decision == "approve" {
+		status = "approved_pending_index"
+		revisionStatus = "approved_pending_index"
+	} else if decision == "reject" {
+		status = "rejected"
+	}
+	_, stamp := now()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(ctx, `UPDATE kah_submissions SET review_status=?,updated_at=? WHERE id=? AND review_status IN ('pending_review','reviewing')`, status, stamp, id)
+	if err != nil {
+		return false, err
+	}
+	count, err := updated.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if count != 1 {
+		return false, nil
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE knowledge_revisions SET status=? WHERE knowledge_id=? AND revision=?`, revisionStatus, knowledgeID, item.Revision); err != nil {
+		return false, err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO kah_reviews(id,submission_id,reviewer_type,reviewer,decision,reason,created_at) VALUES(?,?, 'model',?,?,?,?)`, uuid.NewString(), id, reviewer, decision, strings.TrimSpace(reason), stamp); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Store) PublishKAHSubmission(ctx context.Context, id string) (model.KnowledgeRevision, error) {

@@ -2,14 +2,14 @@ import '@testing-library/jest-dom/vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { expect, test, vi } from 'vitest'
-import { App, MarkdownContent } from './App'
+import { App, MarkdownContent, PrivacySettings } from './App'
 import { client } from './api'
 
 vi.mock('./api', () => ({
   getRuntime: vi.fn(async () => ({apiBaseUrl:'http://127.0.0.1:1',desktopToken:'x',dataRoot:'data',version:'test'})),
   client: {
     libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []),
-    document: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
+    document: vi.fn(), knowledge: vi.fn(), submissions: vi.fn(async () => []), submission: vi.fn(), approveSubmission: vi.fn(), rejectSubmission: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
     providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), backup: vi.fn(), createSavedSearch: vi.fn(), deleteSavedSearch: vi.fn()
   }
 }))
@@ -60,4 +60,21 @@ test('routes Chinese Markdown links through the link handler', () => {
   render(<MarkdownContent content="[打开中文文档](./章节/第二篇.md)" onLink={onLink} />)
   fireEvent.click(screen.getByRole('link', { name: '打开中文文档' }))
   expect(onLink).toHaveBeenCalledWith('./%E7%AB%A0%E8%8A%82/%E7%AC%AC%E4%BA%8C%E7%AF%87.md')
+})
+
+test('shows the import pipeline while automatic summary is running', async () => {
+  vi.mocked(client.jobs).mockResolvedValue([{ id: 'summary-job', kind: 'knowledge_summarize', status: 'running', progress: 0.45, message: '正在调用总结模型', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }])
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  expect(await screen.findByText('导入管线处理中')).toBeInTheDocument()
+  expect(screen.getByText('自动总结')).toBeInTheDocument()
+  expect(screen.getByText('正在调用总结模型')).toBeInTheDocument()
+})
+
+test('exposes per-library automatic summary model controls', async () => {
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-1', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }])
+  vi.mocked(client.providers).mockResolvedValue([{ id: 'provider-1', name: '本地总结模型', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234', model: 'summary', embeddingModel: '', local: true }])
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><PrivacySettings libraries={[{ id: 'library-1', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]} /></QueryClientProvider>)
+  expect(await screen.findByText('导入后自动总结')).toBeInTheDocument()
+  expect(await screen.findByRole('option', { name: '本地总结模型 · 本地' })).toBeInTheDocument()
+  expect(screen.getByRole('combobox', { name: '产品知识库总结模型' })).toHaveValue('provider-1')
 })

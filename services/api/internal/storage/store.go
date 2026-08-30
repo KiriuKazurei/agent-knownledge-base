@@ -70,7 +70,8 @@ func (s *Store) migrate() error {
 		`PRAGMA foreign_keys=ON`,
 		`CREATE TABLE IF NOT EXISTS libraries (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-			allow_remote_models INTEGER NOT NULL DEFAULT 0, auto_review_agent_submissions INTEGER NOT NULL DEFAULT 0,
+			allow_remote_models INTEGER NOT NULL DEFAULT 0, auto_summarize_imports INTEGER NOT NULL DEFAULT 0,
+			summary_provider_id TEXT NOT NULL DEFAULT '', auto_review_agent_submissions INTEGER NOT NULL DEFAULT 0,
 			review_provider_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS documents (
@@ -277,6 +278,8 @@ func (s *Store) migrate() error {
 		name       string
 		definition string
 	}{
+		{"auto_summarize_imports", "INTEGER NOT NULL DEFAULT 0"},
+		{"summary_provider_id", "TEXT NOT NULL DEFAULT ''"},
 		{"auto_review_agent_submissions", "INTEGER NOT NULL DEFAULT 0"},
 		{"review_provider_id", "TEXT NOT NULL DEFAULT ''"},
 	} {
@@ -316,7 +319,7 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) ListLibraries(ctx context.Context) ([]model.Library, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries ORDER BY lower(name)`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -324,12 +327,13 @@ func (s *Store) ListLibraries(ctx context.Context) ([]model.Library, error) {
 	items := []model.Library{}
 	for rows.Next() {
 		var item model.Library
-		var allow, autoReview int
+		var allow, autoSummarize, autoReview int
 		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &allow, &autoReview, &item.ReviewProviderID, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &allow, &autoSummarize, &item.SummaryProviderID, &autoReview, &item.ReviewProviderID, &created, &updated); err != nil {
 			return nil, err
 		}
 		item.AllowRemoteModels = allow == 1
+		item.AutoSummarizeImports = autoSummarize == 1
 		item.AutoReviewAgentSubmissions = autoReview == 1
 		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
 		items = append(items, item)
@@ -343,19 +347,20 @@ func (s *Store) CreateLibrary(ctx context.Context, name, description string) (mo
 	}
 	t, stamp := now()
 	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), CreatedAt: t, UpdatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, 0, 0, "", stamp, stamp)
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, 0, 0, "", 0, "", stamp, stamp)
 	return item, err
 }
 
-func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description *string, allow, autoReview *bool, reviewProviderID *string) (model.Library, error) {
+func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description *string, allow, autoSummarize, autoReview *bool, summaryProviderID, reviewProviderID *string) (model.Library, error) {
 	var current model.Library
-	var allowInt, autoReviewInt int
+	var allowInt, autoSummarizeInt, autoReviewInt int
 	var created, updated string
-	err := s.DB.QueryRowContext(ctx, `SELECT id,name,description,allow_remote_models,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries WHERE id=?`, id).Scan(&current.ID, &current.Name, &current.Description, &allowInt, &autoReviewInt, &current.ReviewProviderID, &created, &updated)
+	err := s.DB.QueryRowContext(ctx, `SELECT id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries WHERE id=?`, id).Scan(&current.ID, &current.Name, &current.Description, &allowInt, &autoSummarizeInt, &current.SummaryProviderID, &autoReviewInt, &current.ReviewProviderID, &created, &updated)
 	if err != nil {
 		return current, err
 	}
 	current.AllowRemoteModels = allowInt == 1
+	current.AutoSummarizeImports = autoSummarizeInt == 1
 	current.AutoReviewAgentSubmissions = autoReviewInt == 1
 	current.CreatedAt = parseTime(created)
 	if name != nil && strings.TrimSpace(*name) != "" {
@@ -367,14 +372,20 @@ func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description 
 	if allow != nil {
 		current.AllowRemoteModels = *allow
 	}
+	if autoSummarize != nil {
+		current.AutoSummarizeImports = *autoSummarize
+	}
 	if autoReview != nil {
 		current.AutoReviewAgentSubmissions = *autoReview
 	}
 	if reviewProviderID != nil {
 		current.ReviewProviderID = strings.TrimSpace(*reviewProviderID)
 	}
+	if summaryProviderID != nil {
+		current.SummaryProviderID = strings.TrimSpace(*summaryProviderID)
+	}
 	current.UpdatedAt, updated = now()
-	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,allow_remote_models=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, boolInt(current.AllowRemoteModels), boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
+	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,allow_remote_models=?,auto_summarize_imports=?,summary_provider_id=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, boolInt(current.AllowRemoteModels), boolInt(current.AutoSummarizeImports), current.SummaryProviderID, boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
 	return current, err
 }
 

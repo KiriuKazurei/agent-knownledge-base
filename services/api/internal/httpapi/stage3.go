@@ -331,6 +331,10 @@ func (s *Server) runURLImportControlled(jobID, libraryID, target string, maxDept
 				return
 			}
 		}
+		if _, _, _, err := s.queueImportedKnowledgeProcessing(ctx, doc.ID); err != nil {
+			s.failJob(ctx, jobID, err)
+			return
+		}
 		imported++
 		_ = s.Store.UpdateJob(ctx, jobID, "running", float64(imported)/float64(maxPages), "Imported "+title)
 		if depth[current] < maxDepth && strings.Contains(strings.ToLower(contentType), "html") {
@@ -538,7 +542,17 @@ func (s *Server) syncExistingSourceFile(ctx context.Context, jobID, libraryID, p
 			return true, err
 		}
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Updated "+existing.Title)
+	summaryJob, summaryQueued, referenceCreated, err := s.queueImportedKnowledgeProcessing(ctx, existing.ID)
+	if err != nil {
+		return true, err
+	}
+	message := "Updated " + existing.Title
+	if summaryQueued {
+		message += "; KAH summary job " + summaryJob.ID + " queued"
+	} else if referenceCreated {
+		message += "; KAH reference draft is awaiting review"
+	}
+	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
 	return true, nil
 }
 

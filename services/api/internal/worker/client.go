@@ -165,8 +165,19 @@ func (c *Client) Close() error {
 		return nil
 	}
 	_ = c.stdin.Close()
+	var killErr error
 	if c.cmd.Process != nil {
-		return c.cmd.Process.Kill()
+		killErr = c.cmd.Process.Kill()
 	}
-	return nil
+	// Process.Kill returns before Wait has reaped the child. On Windows the
+	// worker may still hold files under KAH_DATA_ROOT during that interval,
+	// which makes Store.Close and test/temp-directory cleanup nondeterministic.
+	select {
+	case <-c.closed:
+	case <-time.After(5 * time.Second):
+		if killErr == nil {
+			return errors.New("timed out waiting for worker to stop")
+		}
+	}
+	return killErr
 }

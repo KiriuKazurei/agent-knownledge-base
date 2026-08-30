@@ -15,7 +15,7 @@ import { client, getRuntime } from './api'
 import { SkillMappingDetailPane, SkillMappingsWorkspace } from './SkillMappings'
 import { canonicalDocumentPath, isExternalMarkdownLink, resolveMarkdownDocumentPath } from './markdownLinks'
 import { useUI } from './store'
-import type { AgentToken, Document, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, SavedSearch, Skill } from './types'
+import type { AgentToken, Document, Job, KAHSubmission, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, SavedSearch, Skill } from './types'
 
 function IconButton({ label, children, onClick, active = false }: { label: string; children: React.ReactNode; onClick?: () => void; active?: boolean }) {
   return <button className={`icon-button ${active ? 'active' : ''}`} aria-label={label} title={label} onClick={onClick}>{children}</button>
@@ -85,8 +85,8 @@ export function App() {
 
   const createLibrary = useMutation({ mutationFn: () => client.createLibrary(`新知识库 ${new Date().toLocaleDateString()}`), onSuccess: (library) => { queryClient.invalidateQueries({ queryKey: ['libraries'] }); setSelectedLibrary(library.id) } })
   const favoriteMutation = useMutation({ mutationFn: ({ id, value }: { id: string; value: boolean }) => client.updateDocument(id, { favorite: value }), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['documents'] }) })
-  const importFiles = useMutation({ mutationFn: async () => { if (!selectedLibrary) throw new Error('请先选择知识库'); const paths = await window.kah.selectFiles(); if (!paths.length) return []; return client.importFiles(selectedLibrary, paths) }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['jobs'] }); queryClient.invalidateQueries({ queryKey: ['documents'] }) } })
-  const importUrl = useMutation({ mutationFn: async () => { if (!selectedLibrary || !urlValue.trim()) throw new Error('请选择知识库并输入 URL'); return client.importUrl(selectedLibrary, urlValue.trim()) }, onSuccess: () => { setUrlOpen(false); setUrlValue(''); queryClient.invalidateQueries({ queryKey: ['jobs'] }) } })
+  const importFiles = useMutation({ mutationFn: async () => { if (!selectedLibrary) throw new Error('请先选择知识库'); const paths = await window.kah.selectFiles(); if (!paths.length) return []; return client.importFiles(selectedLibrary, paths) }, onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['jobs'] }); queryClient.invalidateQueries({ queryKey: ['documents'] }); queryClient.invalidateQueries({ queryKey: ['submissions'] }) } })
+  const importUrl = useMutation({ mutationFn: async () => { if (!selectedLibrary || !urlValue.trim()) throw new Error('请选择知识库并输入 URL'); return client.importUrl(selectedLibrary, urlValue.trim()) }, onSuccess: () => { setUrlOpen(false); setUrlValue(''); queryClient.invalidateQueries({ queryKey: ['jobs'] }); queryClient.invalidateQueries({ queryKey: ['documents'] }); queryClient.invalidateQueries({ queryKey: ['submissions'] }) } })
   const search = useMutation({
     mutationFn: ({ text, libraryId }: { text: string; libraryId: string }) => client.knowledgeSearch(text, libraryId ? [libraryId] : []),
     onSuccess: (response) => { setSearchResults(response.results); setSearchInfo(`${response.results.length} 个知识体`) }
@@ -96,6 +96,7 @@ export function App() {
   const shownDocuments = useMemo(() => documents.data ?? [], [documents.data])
   const selectedLibraryValue = libraries.data?.find((item) => item.id === selectedLibrary)
   const activeJobs = jobs.data?.filter((job) => job.status === 'running' || job.status === 'queued') ?? []
+  const pipelineJobs = jobs.data?.filter((job) => ['file_import', 'url_import', 'knowledge_summarize', 'kah_knowledge_review', 'kah_knowledge_publish'].includes(job.kind)) ?? []
 
   function runSearch(value = query) {
     const normalized = value.trim()
@@ -172,7 +173,7 @@ export function App() {
     </aside>
 
     <main className="workspace">
-      {activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} view={skillsView} onViewChange={setSkillsView} selectedTargetId={selectedMappingTarget} onTargetSelect={setSelectedMappingTarget} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} /> : <>
+      {activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} view={skillsView} onViewChange={setSkillsView} selectedTargetId={selectedMappingTarget} onTargetSelect={setSelectedMappingTarget} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} onOpenDocument={(id) => { setActiveSection('knowledge'); setSelectedKnowledge(''); setSelectedDocument(id) }} /> : <>
       {backendError && <div role="alert" className="alert-banner"><CircleAlert size={17}/>{backendError}</div>}
       <header className="workspace-header">
         <div><span className="eyebrow">当前知识库</span><h1>{selectedLibraryValue?.name ?? '全部知识'}</h1></div>
@@ -191,6 +192,7 @@ export function App() {
       </div>
       {urlOpen && <form className="url-import" onSubmit={(event) => { event.preventDefault(); importUrl.mutate() }}><Link2 size={18}/><label htmlFor="import-url">网页地址</label><input id="import-url" type="url" value={urlValue} onChange={(event) => setUrlValue(event.target.value)} placeholder="https://example.com/article" autoFocus/><button className="button primary" type="submit">保存网页</button><IconButton label="关闭" onClick={() => setUrlOpen(false)}><X size={17}/></IconButton></form>}
       <div className="content-heading"><div><h2>{searchResults ? '知识搜索结果' : '来源文档'}</h2><span>{searchResults ? `${searchResults.length} 个知识体` : `${shownDocuments.length} 个项目`}</span></div><div className="content-tools">{searchResults && <button className="text-button" onClick={() => saveSearch.mutate()} disabled={saveSearch.isPending}><Save size={15}/> 固定搜索</button>}<IconButton label="刷新" onClick={() => { documents.refetch(); jobs.refetch() }}><RefreshCw size={17}/></IconButton><IconButton label="筛选"><ListFilter size={17}/></IconButton></div></div>
+      <PipelineStatus jobs={pipelineJobs}/>
        {markdownLinkError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{markdownLinkError}</div>}
       <section className="result-list" aria-live="polite">
         {(documents.error || search.error || importFiles.error || importUrl.error) && <div role="alert" className="inline-error"><CircleAlert size={18}/>{String((documents.error || search.error || importFiles.error || importUrl.error)?.message)}</div>}
@@ -203,13 +205,31 @@ export function App() {
     </main>
 
     <aside className="detail-pane" aria-label={activeSection === 'skills' ? (skillsView === 'mappings' ? '外部映射详情' : 'Skill 详情') : activeSection === 'review' ? '审核提示' : '文档预览'}>
-      {activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
+      {activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} onOpenDocument={(id) => { setSelectedKnowledge(''); setSelectedDocument(id) }} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { detail.refetch(); documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} />}
     </aside>
     <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
   </div>
 }
 
-function ReviewWorkspace({ libraries }: { libraries: LibraryType[] }) {
+function jobLabel(job: Job): string {
+  switch (job.kind) {
+    case 'file_import': return '资料导入'
+    case 'url_import': return '网页导入'
+    case 'knowledge_summarize': return '自动总结'
+    case 'kah_knowledge_review': return 'KAH 自动审核'
+    case 'kah_knowledge_publish': return 'KAH 发布'
+    default: return job.kind
+  }
+}
+
+function PipelineStatus({ jobs }: { jobs: Job[] }) {
+  const visible = jobs.filter((job) => job.status === 'queued' || job.status === 'running' || job.status === 'failed').slice(0, 4)
+  if (!visible.length) return null
+  const failed = visible.some((job) => job.status === 'failed')
+  return <div className={`pipeline-status ${failed ? 'has-error' : ''}`} role={failed ? 'alert' : 'status'} aria-live="polite"><div className="pipeline-status-heading">{failed ? <CircleAlert size={16}/> : <LoaderCircle className="spin" size={16}/>}<strong>{failed ? '管线有任务失败' : '导入管线处理中'}</strong></div><div className="pipeline-status-list">{visible.map((job) => <div className="pipeline-status-row" key={job.id}><span>{jobLabel(job)}</span><span className={`pipeline-job-state ${job.status}`}>{job.status === 'queued' ? '排队中' : job.status === 'running' ? `${Math.round(job.progress * 100)}%` : '失败'}</span><small>{job.message || '等待后台更新'}</small></div>)}</div></div>
+}
+
+function ReviewWorkspace({ libraries, onOpenDocument }: { libraries: LibraryType[]; onOpenDocument: (id: string) => void }) {
   const queryClient = useQueryClient()
   const [selectedId, setSelectedId] = useState('')
   const [reason, setReason] = useState('')
@@ -217,7 +237,7 @@ function ReviewWorkspace({ libraries }: { libraries: LibraryType[] }) {
   const detail = useQuery({ queryKey: ['submission', selectedId], queryFn: () => client.submission(selectedId), enabled: Boolean(selectedId) })
   const approve = useMutation({ mutationFn: () => client.approveSubmission(selectedId, reason.trim()), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['submissions'] }); queryClient.invalidateQueries({ queryKey: ['jobs'] }); setReason('') } })
   const reject = useMutation({ mutationFn: () => client.rejectSubmission(selectedId, reason.trim()), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['submissions'] }); setReason('') } })
-  const actionable = submissions.data?.filter((item) => item.reviewStatus === 'pending_review') ?? []
+  const actionable = submissions.data?.filter((item) => item.reviewStatus === 'pending_review' || item.reviewStatus === 'reviewing') ?? []
   const libraryName = (id: string) => libraries.find((item) => item.id === id)?.name ?? id
   return <>
     <header className="workspace-header"><div><span className="eyebrow">质量门禁</span><h1>待审核知识</h1></div><div className="header-actions"><button className="button secondary" onClick={() => submissions.refetch()} disabled={submissions.isFetching}><RefreshCw size={17}/>刷新队列</button></div></header>
@@ -226,12 +246,12 @@ function ReviewWorkspace({ libraries }: { libraries: LibraryType[] }) {
     <section className="review-layout">
       <div className="result-list" aria-label="待审核提交列表">
         {submissions.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入审核队列</div>}
-        {actionable.map((item) => <button className={'document-row ' + (selectedId === item.id ? 'active' : '')} key={item.id} onClick={() => { setSelectedId(item.id); setReason('') }}><span className="file-icon"><FileCode2 size={19}/></span><span className="document-copy"><strong>{item.title}</strong><small>{libraryName(item.libraryId)} · {item.summary || '无摘要'}</small></span><span className={'status-pill ' + item.reviewStatus}>待审核</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}
+        {actionable.map((item) => <button className={'document-row ' + (selectedId === item.id ? 'active' : '')} key={item.id} onClick={() => { setSelectedId(item.id); setReason('') }}><span className="file-icon"><FileCode2 size={19}/></span><span className="document-copy"><strong>{item.title}</strong><small>{libraryName(item.libraryId)} · {item.summary || '无摘要'}</small></span><span className={'status-pill ' + item.reviewStatus}>{item.reviewStatus === 'reviewing' ? '自动审核中' : '待审核'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}
         {!submissions.isLoading && !actionable.length && <Empty icon={<CheckCircle2 size={25}/>} title="审核队列为空" text="新的 Agent 提交会先停留在这里，审核通过后才可检索。" />}
       </div>
       <article className="review-card" aria-live="polite">
         {!detail.data && <Empty icon={<PanelRight size={25}/>} title="选择一条提交" text="查看完整 Markdown、来源声明和审核记录。" />}
-        {detail.data && <><div className="review-card-heading"><div><span className="eyebrow">{libraryName(detail.data.libraryId)}</span><h2>{detail.data.title}</h2></div><span className={'status-pill ' + detail.data.reviewStatus}>{detail.data.reviewStatus}</span></div><p className="settings-lead">{detail.data.summary}</p><div className="review-provenance"><strong>来源声明</strong><pre>{JSON.stringify(detail.data.provenance ?? {}, null, 2)}</pre></div>{detail.data.markdown && <div className="review-markdown"><MarkdownContent content={detail.data.markdown}/></div>}<label className="review-reason">审核说明<textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="驳回时必须填写理由；批准说明会进入审计记录。" rows={3}/></label><div className="preview-actions"><button className="button primary" onClick={() => approve.mutate()} disabled={approve.isPending || detail.data.reviewStatus !== 'pending_review'}><CheckCircle2 size={16}/>批准并发布</button><button className="button danger" onClick={() => reject.mutate()} disabled={reject.isPending || !reason.trim() || detail.data.reviewStatus !== 'pending_review'}><CircleAlert size={16}/>驳回</button></div>{detail.data.reviews?.length ? <div className="review-history"><h3>审核记录</h3>{detail.data.reviews.map((review) => <div className="review-history-row" key={review.id}><strong>{review.reviewerType === 'model' ? '审查模型' : '人工审核'} · {review.decision}</strong><span>{review.reason}</span></div>)}</div> : null}</>}
+        {detail.data && <><div className="review-card-heading"><div><span className="eyebrow">{libraryName(detail.data.libraryId)}</span><h2>{detail.data.title}</h2></div><span className={'status-pill ' + detail.data.reviewStatus}>{detail.data.reviewStatus}</span></div><p className="settings-lead">{detail.data.summary}</p><SubmissionSources submission={detail.data} onOpenDocument={onOpenDocument}/><div className="review-provenance"><strong>来源与生成元数据</strong><pre>{JSON.stringify(detail.data.provenance ?? {}, null, 2)}</pre></div>{detail.data.markdown && <div className="review-markdown"><MarkdownContent content={detail.data.markdown}/></div>}<label className="review-reason">审核说明<textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="驳回时必须填写理由；批准说明会进入审计记录。" rows={3}/></label><div className="preview-actions"><button className="button primary" onClick={() => approve.mutate()} disabled={approve.isPending || detail.data.reviewStatus !== 'pending_review'}><CheckCircle2 size={16}/>批准并发布</button><button className="button danger" onClick={() => reject.mutate()} disabled={reject.isPending || !reason.trim() || detail.data.reviewStatus !== 'pending_review'}><CircleAlert size={16}/>驳回</button></div>{detail.data.reviews?.length ? <div className="review-history"><h3>审核记录</h3>{detail.data.reviews.map((review) => <div className="review-history-row" key={review.id}><strong>{review.reviewerType === 'model' ? '审查模型' : '人工审核'} · {review.decision}</strong><span>{review.reason}</span></div>)}</div> : null}</>}
       </article>
     </section>
     <footer className="status-bar" role="status" aria-live="polite"><div><Clock3 size={13}/> 审核通过前不会写入正式索引</div><div>{submissions.isFetching ? '正在刷新审核状态' : '审核记录可追溯'}<span className="separator"/>v0.1.0</div></footer>
@@ -269,6 +289,13 @@ function SkillsWorkspace({ libraries: _libraries, selectedId, onSelect, view, on
     {view === 'skills' ? <><div className="search-row"><Search size={19}/><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选 Skill 名称或能力描述…" aria-label="筛选 Skill" />{filter && <IconButton label="清空筛选" onClick={() => setFilter('')}><X size={16}/></IconButton>}</div>{importError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{importError.message}</div>}<div className="content-heading"><div><h2>已安装 Skills</h2><span>{visible.length} 个能力包</span></div><IconButton label="刷新 Skills" onClick={() => skills.refetch()}><RefreshCw size={17}/></IconButton></div><section className="result-list" aria-live="polite">{skills.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入 Skills</div>}{visible.map((item) => <button className={`document-row ${selectedId === item.id ? 'active' : ''}`} key={item.id} onClick={() => onSelect(item.id)}><span className="file-icon"><FolderArchive size={19}/></span><span className="document-copy"><strong>{item.name}</strong><small>{item.description}</small></span><span className={`status-pill ${item.status}`}>{item.status === 'ready' ? `${item.fileCount} 个文件` : '校验失败'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}{!skills.isLoading && visible.length === 0 && <Empty icon={<FolderArchive size={25}/>} title="还没有 Skill" text="导入 SKILL.md 或 Skill zip，建立可复用的 Agent 能力。" />}</section></> : <SkillMappingsWorkspace skills={skills.data ?? []} selectedTargetId={selectedTargetId} onTargetSelect={onTargetSelect} />}
     <footer className="status-bar" role="status" aria-live="polite"><div>{view === 'skills' ? importMutation.isPending ? <><LoaderCircle className="spin" size={13}/> 正在导入 Skill</> : <><CheckCircle2 size={13}/> Skill 目录已就绪</> : <><Link2 size={13}/> 映射状态由外部目录验证</>}</div><div>{view === 'skills' ? '标准入口 · 按需加载' : '真实目录软链接 · 不复制内容'}<span className="separator"/>v0.1.0</div></footer>
   </>
+}
+
+function SubmissionSources({ submission, onOpenDocument }: { submission: KAHSubmission; onOpenDocument: (id: string) => void }) {
+  const provenance = submission.provenance ?? {}
+  const sources = Array.isArray(provenance.sources) ? provenance.sources as Array<Record<string, unknown>> : []
+  if (!sources.length) return <div className="source-connection muted"><Link2 size={15}/>未声明结构化来源</div>
+  return <div className="source-connection"><strong><Link2 size={15}/>来源连接</strong>{sources.map((source, index) => { const locator = source.locator && typeof source.locator === 'object' ? source.locator as Record<string, unknown> : {}; const resource = String(source.resource ?? ''); const documentId = resource.startsWith('kah://document/') ? resource.slice('kah://document/'.length) : typeof locator.documentId === 'string' ? locator.documentId : ''; return <div className="source-connection-row" key={`${resource}-${index}`}><code>{resource || '未命名来源'}</code>{documentId ? <button className="text-button" onClick={() => onOpenDocument(documentId)}>查看来源文档</button> : <span className="muted">需通过外部链接核验</span>}</div> })}</div>
 }
 
 function SkillDetailPane({ skillId, libraries, onDeleted }: { skillId: string; libraries: LibraryType[]; onDeleted: () => void }) {
@@ -314,7 +341,7 @@ function LocationLabel({ location }: { location: Record<string, unknown> }) {
   return <span><BookOpen size={13}/>{parts.join(' · ') || '文档片段'}</span>
 }
 
-function KnowledgePreview({ detail, loading }: { detail?: KnowledgeRevision; loading: boolean }) {
+function KnowledgePreview({ detail, loading, onOpenDocument }: { detail?: KnowledgeRevision; loading: boolean; onOpenDocument: (id: string) => void }) {
   if (loading) return <div className="preview-loading"><LoaderCircle className="spin"/>正在载入知识体</div>
   if (!detail) return <Empty icon={<BookOpen size={25}/>} title="选择一个知识体" text="知识正文、来源和审查提示会显示在这里。" />
   const payload = detail.payload
@@ -322,7 +349,7 @@ function KnowledgePreview({ detail, loading }: { detail?: KnowledgeRevision; loa
     <div className="preview-heading"><div><span className="eyebrow">KAH Knowledge Profile v1</span><h2>{payload.title}</h2><p>{payload.description}</p></div><span className={`status-pill ${detail.status}`}>{detail.stable ? `稳定 r${detail.revision}` : detail.status}</span></div>
     <div className="preview-meta"><span>{payload.type}{payload.subtype ? ` · ${payload.subtype}` : ''}</span><span>{payload.language}</span><span>{detail.flags.length ? detail.flags.join('、') : '无运行时警告'}</span></div>
     {payload.sections.map((section) => <section className="preview-section" key={section.id}><h3>{section.heading}</h3><MarkdownContent content={section.content}/></section>)}
-    {payload.sources?.length ? <section className="preview-section"><h3>可引用来源</h3><ul>{payload.sources.map((source) => <li key={source.id}><code>{`[^${source.id}]`}</code> {source.resource.startsWith('https://') ? <a href={source.resource} onClick={(event) => { event.preventDefault(); void window.kah.openExternal(source.resource) }}>{source.title || source.resource}</a> : <span>{source.title || source.resource}</span>}{source.locator && <small> · {Object.entries(source.locator).map(([key, value]) => `${key}: ${String(value)}`).join(', ')}</small>}</li>)}</ul></section> : null}
+    {payload.sources?.length ? <section className="preview-section"><h3>可引用来源</h3><ul>{payload.sources.map((source) => { const documentId = source.resource.startsWith('kah://document/') ? source.resource.slice('kah://document/'.length) : ''; return <li key={source.id}><code>{`[^${source.id}]`}</code> {source.resource.startsWith('https://') ? <a href={source.resource} onClick={(event) => { event.preventDefault(); void window.kah.openExternal(source.resource) }}>{source.title || source.resource}</a> : <span>{source.title || source.resource}</span>}{documentId && <button className="text-button source-open-button" onClick={() => onOpenDocument(documentId)}>查看来源文档</button>}{source.locator && <small> · {Object.entries(source.locator).map(([key, value]) => `${key}: ${String(value)}`).join(', ')}</small>}</li> })}</ul></section> : null}
   </div>
 }
 
@@ -365,9 +392,10 @@ function TokenSettings({ libraries }: { libraries: LibraryType[] }) {
 }
 function DataSettings({runtime}:{runtime?:RuntimeConfig}) { const [result,setResult]=useState('');const backup=useMutation({mutationFn:client.backup,onSuccess:(value)=>setResult(`${value.path}\nSHA-256 ${value.sha256}`)});return <section><h3>数据与备份</h3><p className="settings-lead">安装模式使用用户数据目录；便携模式使用程序旁的相对 <code>data</code> 目录。</p><div className="info-card"><Database size={19}/><div><strong>当前数据目录</strong><code>{runtime?.dataRoot??'正在读取…'}</code></div></div><button className="button primary" onClick={()=>backup.mutate()} disabled={backup.isPending}><Archive size={16}/>{backup.isPending?'正在生成…':'创建完整备份'}</button>{result&&<pre className="backup-result">{result}</pre>}</section> }
 
-function PrivacySettings({ libraries }: { libraries: LibraryType[] }) {
+export function PrivacySettings({ libraries }: { libraries: LibraryType[] }) {
   const queryClient = useQueryClient()
   const providers = useQuery({ queryKey: ['providers'], queryFn: client.providers })
   const update = useMutation({ mutationFn: ({ id, patch }: { id: string; patch: Partial<LibraryType> }) => client.updateLibrary(id, patch), onSuccess: () => queryClient.invalidateQueries({ queryKey: ['libraries'] }) })
-  return <section><h3>隐私与安全</h3><p className="settings-lead">默认不把知识片段发送到远程模型。密钥保存在 Windows Credential Manager。</p><div className="security-card"><ShieldCheck size={22}/><div><strong>零遥测模式已启用</strong><p>日志仅保存在本机，可由用户主动导出。</p></div></div><h4>逐库远程授权</h4>{libraries.map((library)=><div key={library.id}><label className="switch-row"><span><strong>{library.name}</strong><small>{library.allowRemoteModels?'允许远程生成':'仅限本地处理'}</small></span><input type="checkbox" checked={library.allowRemoteModels} onChange={(e)=>update.mutate({id:library.id,patch:{allowRemoteModels:e.target.checked}})}/></label><label className="switch-row"><span><strong>自动审核 Agent 提交</strong><small>{library.autoReviewAgentSubmissions?'已启用，审核模型通过后自动发布':'关闭，提交进入人工审核队列'}</small></span><input type="checkbox" checked={library.autoReviewAgentSubmissions} disabled={!providers.data?.length} onChange={(e)=>update.mutate({id:library.id,patch:{autoReviewAgentSubmissions:e.target.checked}})}/></label>{library.autoReviewAgentSubmissions && <label className="switch-row"><span><strong>审核模型</strong><small>远程模型只有在上方允许后才能使用</small></span><select aria-label={library.name + '审核模型'} value={library.reviewProviderId ?? ''} onChange={(e)=>update.mutate({id:library.id,patch:{reviewProviderId:e.target.value}})}><option value="">选择审核模型</option>{providers.data?.map((provider)=><option value={provider.id} key={provider.id}>{provider.name} · {provider.local?'本地':'远程'}</option>)}</select></label>}</div>)}{update.error&&<p className="form-error" role="alert">{(update.error as Error).message}</p>}</section>
+  const providerOptions = providers.data ?? []
+  return <section><h3>隐私与安全</h3><p className="settings-lead">默认不把知识片段发送到远程模型。密钥保存在 Windows Credential Manager；每个知识库单独决定是否允许自动处理。</p><div className="security-card"><ShieldCheck size={22}/><div><strong>零遥测模式已启用</strong><p>日志仅保存在本机，可由用户主动导出。</p></div></div><h4>逐库自动化与远程授权</h4>{libraries.map((library)=><div className="library-automation-card" key={library.id}><div className="library-automation-heading"><strong>{library.name}</strong><span>{library.allowRemoteModels ? '允许远程模型' : '仅限本地模型'}</span></div><label className="switch-row"><span><strong>允许远程模型</strong><small>关闭后总结和审核只能选择本地模型。</small></span><input type="checkbox" checked={library.allowRemoteModels} onChange={(e)=>update.mutate({id:library.id,patch:{allowRemoteModels:e.target.checked}})}/></label><label className="switch-row"><span><strong>导入后自动总结</strong><small>{library.autoSummarizeImports ? '导入完成后生成 KAH 待审核草稿' : '导入后只生成可追溯资料草稿'}</small></span><input type="checkbox" checked={library.autoSummarizeImports} disabled={!providerOptions.length} onChange={(e)=>update.mutate({id:library.id,patch:{autoSummarizeImports:e.target.checked}})}/></label>{library.autoSummarizeImports && <label className="switch-row"><span><strong>总结模型</strong><small>模型只接收导入资料提取文本，输出仍需审核。</small></span><select aria-label={library.name + '总结模型'} value={library.summaryProviderId ?? ''} onChange={(e)=>update.mutate({id:library.id,patch:{summaryProviderId:e.target.value}})}><option value="">选择总结模型</option>{providerOptions.map((provider)=><option value={provider.id} key={provider.id}>{provider.name} · {provider.local ? '本地' : '远程'}</option>)}</select></label>}<label className="switch-row"><span><strong>自动审核 Agent / KAH 草稿</strong><small>{library.autoReviewAgentSubmissions ? '审核模型通过后自动发布稳定 revision' : '关闭，所有草稿进入人工审核队列'}</small></span><input type="checkbox" checked={library.autoReviewAgentSubmissions} disabled={!providerOptions.length} onChange={(e)=>update.mutate({id:library.id,patch:{autoReviewAgentSubmissions:e.target.checked}})}/></label>{library.autoReviewAgentSubmissions && <label className="switch-row"><span><strong>审核模型</strong><small>远程模型只有在上方允许后才能使用。</small></span><select aria-label={library.name + '审核模型'} value={library.reviewProviderId ?? ''} onChange={(e)=>update.mutate({id:library.id,patch:{reviewProviderId:e.target.value}})}><option value="">选择审核模型</option>{providerOptions.map((provider)=><option value={provider.id} key={provider.id}>{provider.name} · {provider.local ? '本地' : '远程'}</option>)}</select></label>}</div>)}{!libraries.length && <p className="muted">先创建知识库，再配置导入自动化。</p>}{update.error&&<p className="form-error" role="alert">{(update.error as Error).message}</p>}</section>
 }

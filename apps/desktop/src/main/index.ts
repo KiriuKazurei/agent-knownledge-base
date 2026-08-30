@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 const API_PORT = 48761
+const BACKEND_START_TIMEOUT_MS = 90_000
+const BACKEND_RETRY_INTERVAL_MS = 250
 let backend: ChildProcess | undefined
 let mainWindow: BrowserWindow | undefined
 let isQuitting = false
@@ -74,7 +76,8 @@ function startBackend(): void {
     backend = spawn(path.join(backendDirectory, 'kah-api.exe'), [], { env: environment, windowsHide: true })
   } else {
     const root = projectRoot()
-    environment.KAH_WORKER_CMD = process.env.KAH_PYTHON ?? 'python'
+    const configuredPython = process.env.KAH_PYTHON?.trim()
+    environment.KAH_WORKER_CMD = configuredPython || findExecutable('python3.14') || findExecutable('python') || 'python'
     environment.KAH_WORKER_MODULE = 'knowledge_worker'
     environment.KAH_WORKER_CWD = path.join(root, 'services', 'worker')
     environment.PYTHONPATH = path.join(root, 'services', 'worker', 'src')
@@ -105,8 +108,10 @@ function startBackend(): void {
 }
 
 async function waitForBackend(): Promise<void> {
+  const startedAt = Date.now()
+  const deadline = startedAt + BACKEND_START_TIMEOUT_MS
   let lastError: unknown
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  while (Date.now() < deadline) {
     try {
       const health = await fetch('http://127.0.0.1:' + API_PORT + '/api/v1/health')
       if (health.ok) {
@@ -119,9 +124,10 @@ async function waitForBackend(): Promise<void> {
         lastError = new Error('Backend health returned ' + health.status)
       }
     } catch (error) { lastError = error }
-    await new Promise((resolve) => setTimeout(resolve, 250))
+    await new Promise((resolve) => setTimeout(resolve, BACKEND_RETRY_INTERVAL_MS))
   }
-  throw new Error('Backend did not become healthy for this desktop session: ' + String(lastError ?? 'timeout'))
+  const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000)
+  throw new Error(`Backend did not become healthy within ${elapsedSeconds}s for this desktop session: ${String(lastError ?? 'timeout')}`)
 }
 
 async function createWindow(): Promise<void> {

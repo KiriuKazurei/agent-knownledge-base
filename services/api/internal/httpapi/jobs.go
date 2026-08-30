@@ -101,6 +101,24 @@ func (s *Server) resumeQueuedJob(item storage.QueuedJob) error {
 			return err
 		}
 		go s.runKnowledgeReview(item.ID, submissionID)
+	case "knowledge_summarize":
+		documentID, err := requiredJobString(payload, "documentId")
+		if err != nil {
+			return err
+		}
+		go s.runKnowledgeSummarize(item.ID, documentID)
+	case "kah_knowledge_review":
+		submissionID, err := requiredJobString(payload, "submissionId")
+		if err != nil {
+			return err
+		}
+		go s.runKAHKnowledgeReview(item.ID, submissionID)
+	case "kah_knowledge_publish":
+		submissionID, err := requiredJobString(payload, "submissionId")
+		if err != nil {
+			return err
+		}
+		go s.runKAHKnowledgePublish(item.ID, submissionID)
 	case "knowledge_publish":
 		submissionID, err := requiredJobString(payload, "submissionId")
 		if err != nil {

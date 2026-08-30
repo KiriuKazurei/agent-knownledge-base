@@ -7,6 +7,8 @@ type Library struct {
 	Name                       string    `json:"name"`
 	Description                string    `json:"description"`
 	AllowRemoteModels          bool      `json:"allowRemoteModels"`
+	AutoSummarizeImports       bool      `json:"autoSummarizeImports"`
+	SummaryProviderID          string    `json:"summaryProviderId,omitempty"`
 	AutoReviewAgentSubmissions bool      `json:"autoReviewAgentSubmissions"`
 	ReviewProviderID           string    `json:"reviewProviderId,omitempty"`
 	CreatedAt                  time.Time `json:"createdAt"`
