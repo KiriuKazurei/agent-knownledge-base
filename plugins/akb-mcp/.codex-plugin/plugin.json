@@ -1,6 +1,6 @@
 {
   "name": "akb-mcp",
-  "version": "0.1.0+codex.20260830105412",
+  "version": "0.1.0+codex.20260830112640",
   "description": "Connect Codex to the local Agent Knowledge Base MCP read and manage endpoints.",
   "author": {
     "name": "KiriuKazurei"

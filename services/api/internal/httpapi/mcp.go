@@ -166,7 +166,29 @@ func mcpTools(mode string) []gin.H {
 		{"name": "knowledge_get", "description": "Read one stable KAH knowledge revision or selected stable section IDs.", "inputSchema": getSchema, "annotations": gin.H{"readOnlyHint": true}},
 	}
 	if mode == "manage" {
-		candidate := gin.H{"type": "object", "description": "KAH Knowledge Profile v1 JSON candidate"}
+		section := gin.H{"type": "object", "required": []string{"id", "heading", "content"}, "properties": gin.H{
+			"id": gin.H{"type": "string"}, "heading": gin.H{"type": "string"}, "content": gin.H{"type": "string"},
+		}}
+		source := gin.H{"type": "object", "required": []string{"id", "resource"}, "properties": gin.H{
+			"id": gin.H{"type": "string"}, "resource": gin.H{"type": "string"}, "title": gin.H{"type": "string"},
+			"locator": gin.H{"type": "object", "additionalProperties": true},
+			"snapshot": gin.H{"type": "object", "properties": gin.H{
+				"status": gin.H{"type": "string"}, "content_hash": gin.H{"type": "string"}, "captured_at": gin.H{"type": "string"},
+			}},
+		}}
+		candidate := gin.H{"type": "object", "description": "KAH Knowledge Profile v1 JSON candidate. Some clients may encode this nested object as a JSON string; the server accepts both forms.", "required": []string{"schema", "type", "title", "description", "language", "sections", "sources"}, "properties": gin.H{
+			"schema": gin.H{"type": "string", "description": "Must be kah-knowledge/v1"},
+			"id":     gin.H{"type": "string"}, "revision": gin.H{"type": "integer"},
+			"type":    gin.H{"type": "string", "enum": []string{"concept", "claim", "procedure", "decision", "policy", "reference"}},
+			"subtype": gin.H{"type": "string"}, "title": gin.H{"type": "string"}, "description": gin.H{"type": "string"},
+			"language":        gin.H{"type": "string", "enum": []string{"zh-CN", "en"}},
+			"aliases":         gin.H{"type": "array", "items": gin.H{"type": "string"}},
+			"primary_path":    gin.H{"type": "array", "items": gin.H{"type": "string"}},
+			"classifications": gin.H{"type": "object", "additionalProperties": gin.H{"type": "array", "items": gin.H{"type": "string"}}},
+			"tags":            gin.H{"type": "array", "items": gin.H{"type": "string"}},
+			"sections":        gin.H{"type": "array", "items": section}, "sources": gin.H{"type": "array", "items": source},
+			"duplicate_intent": gin.H{"type": "string"},
+		}}
 		tools = append(tools,
 			gin.H{"name": "knowledge_validate", "description": "Validate a KAH v1 candidate before submitting it.", "inputSchema": gin.H{"type": "object", "required": []string{"libraryId", "candidate"}, "properties": gin.H{"libraryId": gin.H{"type": "string"}, "candidate": candidate}}, "annotations": gin.H{"readOnlyHint": true}},
 			gin.H{"name": "knowledge_submit", "description": "Create a review-only draft or propose an immutable revision. Never publishes or deletes knowledge.", "inputSchema": gin.H{"type": "object", "required": []string{"libraryId", "mode", "candidate", "idempotencyKey"}, "properties": gin.H{"libraryId": gin.H{"type": "string"}, "mode": gin.H{"enum": []string{"create", "propose_revision"}}, "baseUri": gin.H{"type": "string"}, "candidate": candidate, "idempotencyKey": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
@@ -174,6 +196,47 @@ func mcpTools(mode string) []gin.H {
 		)
 	}
 	return tools
+}
+
+type mcpKnowledgeToolInput struct {
+	LibraryID      string                 `json:"libraryId"`
+	Mode           string                 `json:"mode"`
+	BaseURI        string                 `json:"baseUri"`
+	CandidateRaw   json.RawMessage        `json:"candidate"`
+	IdempotencyKey string                 `json:"idempotencyKey"`
+	Candidate      model.KnowledgePayload `json:"-"`
+}
+
+func decodeMCPKnowledgeToolInput(raw json.RawMessage) (mcpKnowledgeToolInput, error) {
+	var input mcpKnowledgeToolInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return input, err
+	}
+	if input.LibraryID == "" && len(input.CandidateRaw) == 0 {
+		var wrapper struct {
+			Input json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(raw, &wrapper); err == nil && len(wrapper.Input) > 0 {
+			var nested mcpKnowledgeToolInput
+			if err := json.Unmarshal(wrapper.Input, &nested); err == nil {
+				input = nested
+			}
+		}
+	}
+	if len(input.CandidateRaw) == 0 || string(input.CandidateRaw) == "null" {
+		return input, errors.New("candidate is required")
+	}
+	if err := json.Unmarshal(input.CandidateRaw, &input.Candidate); err == nil {
+		return input, nil
+	}
+	var encoded string
+	if err := json.Unmarshal(input.CandidateRaw, &encoded); err != nil {
+		return input, err
+	}
+	if err := json.Unmarshal([]byte(encoded), &input.Candidate); err != nil {
+		return input, err
+	}
+	return input, nil
 }
 
 func mcpResources(mode string) []gin.H {
@@ -323,11 +386,8 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 		if mode != "manage" {
 			return fail("FORBIDDEN_SCOPE", "manage access is required")
 		}
-		var input struct {
-			LibraryID string                 `json:"libraryId"`
-			Candidate model.KnowledgePayload `json:"candidate"`
-		}
-		if err := json.Unmarshal(raw, &input); err != nil || input.LibraryID == "" {
+		input, err := decodeMCPKnowledgeToolInput(raw)
+		if err != nil || strings.TrimSpace(input.LibraryID) == "" {
 			return fail("SCHEMA_INVALID", "libraryId and candidate are required")
 		}
 		if _, err := s.allowedMCPLibraries(c, []string{input.LibraryID}); err != nil {
@@ -345,14 +405,8 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 		if mode != "manage" {
 			return fail("FORBIDDEN_SCOPE", "manage access is required")
 		}
-		var input struct {
-			LibraryID      string                 `json:"libraryId"`
-			Mode           string                 `json:"mode"`
-			BaseURI        string                 `json:"baseUri"`
-			Candidate      model.KnowledgePayload `json:"candidate"`
-			IdempotencyKey string                 `json:"idempotencyKey"`
-		}
-		if err := json.Unmarshal(raw, &input); err != nil {
+		input, err := decodeMCPKnowledgeToolInput(raw)
+		if err != nil {
 			return fail("SCHEMA_INVALID", "libraryId, candidate, and idempotencyKey are required")
 		}
 		input.LibraryID = strings.TrimSpace(input.LibraryID)

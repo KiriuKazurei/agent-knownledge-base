@@ -178,11 +178,15 @@ func TestMCPManageSubmitsDraftAndCannotPublish(t *testing.T) {
 		"sections": []map[string]any{{"id": "claim", "heading": "主张", "content": "提交前必须验证来源。[^seed]"}},
 		"sources":  []map[string]any{{"id": "seed", "resource": stable.URI + "?revision=1", "title": stable.Payload.Title}},
 	}
-	validated := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_validate", "arguments": map[string]any{"libraryId": library.ID, "candidate": candidate}})
+	candidateJSON, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_validate", "arguments": map[string]any{"libraryId": library.ID, "candidate": string(candidateJSON)}})
 	if validated["result"] == nil {
 		t.Fatalf("validation failed: %#v", validated)
 	}
-	submitted := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submit", "arguments": map[string]any{"libraryId": library.ID, "mode": "create", "candidate": candidate, "idempotencyKey": "managed-1"}})
+	submitted := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submit", "arguments": map[string]any{"libraryId": library.ID, "mode": "create", "candidate": string(candidateJSON), "idempotencyKey": "managed-1"}})
 	result := submitted["result"].(map[string]any)
 	structured := result["structuredContent"].(map[string]any)
 	if structured["reviewStatus"] != "pending_review" {

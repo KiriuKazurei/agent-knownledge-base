@@ -37,6 +37,21 @@ When the user asks to turn local Markdown documents into knowledge:
 
 - Include a meaningful `title`, `description`, `type`, `language`, `sections`, `sources`, and `tags`; use `primary_path` and `classifications` when taxonomy is useful.
 - Use the required section ids for the selected type. Keep section bodies concise, factual, and independently understandable.
+- Use the canonical wire keys exactly: `description` (not `summary`), section objects with `id`, `heading`, and `content` (not `title`/`body`), and source objects with `id`, `resource`, `locator`, and, for imported documents, `snapshot.content_hash` (not `uri` or a top-level `content_hash`). For example:
+
+  ```json
+  {
+    "schema": "kah-knowledge/v1",
+    "type": "reference",
+    "title": "A concise title",
+    "description": "A concise description",
+    "language": "zh-CN",
+    "sections": [{"id": "overview", "heading": "概览", "content": "Evidence-backed text. [^source-1]"}],
+    "sources": [{"id": "source-1", "resource": "kah://document/<uuid>", "locator": {"section": "README.md#heading"}, "snapshot": {"content_hash": "<hash>"}}],
+    "tags": ["topic"]
+  }
+  ```
+- Use the exact token-scoped library UUID supplied by the caller or runtime context; `default` and `source-unverified` are not library aliases.
 - Do not invent `status`, `confidence`, or `scope` fields: workflow state and review status are managed by the server, while scope is expressed through the selected library and optional taxonomy fields.
 - New submissions are review-gated by the server; do not try to mark a candidate as published in its payload.
 - Put uncertainty, version boundaries, and unresolved conflicts in the knowledge body or review notes rather than hiding them.
