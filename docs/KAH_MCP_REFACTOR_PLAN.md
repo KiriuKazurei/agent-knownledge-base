@@ -20,7 +20,7 @@ Agent ── mcp_manage ──────────────> POST /mcp/ma
 - Canonical payload 使用 `kah-knowledge/v1`，支持 `concept`、`claim`、`procedure`、`decision`、`policy`、`reference` 六类。
 - `kah://knowledge/<uuid>` 是条目标识；`?revision=N` 固定历史 revision；`#section-id` 固定段落。
 - revision 只追加，不覆盖历史内容；同一知识库按语义内容 hash 做精确去重，跨知识库不误判为重复。
-- Agent 提交必须有来源、正文引用、精确的 KAH source revision，以及 `idempotencyKey`；HTTPS 来源会做大小限制和公网地址校验，无法快照时保留 `source-unverified` 标记。
+- Agent 提交必须有来源、正文引用、精确的 KAH source revision 或已导入文档的 content hash，以及 `idempotencyKey`；HTTPS 来源会做大小限制和公网地址校验，无法快照时保留 `source-unverified` 标记。
 - `create` 和 `propose_revision` 都先进入 `pending_review`。人工批准后进入 `approved_pending_index`，当前实现随后原子切换稳定指针并标记为 `stable`；旧稳定 revision 变为 `deprecated`。驳回 revision 永不进入 Read MCP。
 
 ## 3. MCP 接口
@@ -47,7 +47,7 @@ Manage 额外提供：
 - `knowledge_submit`：创建草稿或提议 revision，幂等返回同一 submission；不具备发布能力。
 - `knowledge_submission_get`：读取 submission 的校验、审核和发布状态。
 
-固定资源包括 `kah://schema/kah-knowledge/v1`、Read Skill 和 Manage Skill；知识正文可通过 `resources/read` 读取，支持 revision 和 section fragment。
+固定资源包括 `kah://schema/kah-knowledge/v1`、Read Skill 和 Manage Skill；知识正文可通过 `resources/read` 读取，支持 revision 和 section fragment。`resources/list` 还会按 token scope 列出已完成索引的导入文档，文档使用不暴露文件系统路径的 `kah://document/<uuid>` URI；`resources/read` 返回索引正文，Manage 校验会确认文档属于目标 library、状态为 `ready` 且 `sources[].snapshot.content_hash` 与当前文档一致。
 
 ## 4. 桌面端契约
 
@@ -67,6 +67,7 @@ OpenAPI 只描述桌面管理接口：
 | KAH schema、revision、来源、关系 | 已实现 | storage 单元测试与 MCP 端到端用例 |
 | 精确/近似去重、幂等提交 | 已实现 | 同库/跨库和 cursor 回归 |
 | Read/Manage MCP、Origin、scope | 已实现 | `mcp_test.go` 与 2026-08-30 原始 HTTP MCP client 烟测；目标 MCP client 仍需互操作验收 |
+| 导入文档 MCP 资源与来源快照 | 已实现 | 2026-08-30 真实 Electron 会话列出 3 个 ready Markdown 文档；读取 `README.zh.md`/`dsh-ecosystem-spec/README.md` 并完成 hash/chunk 引用的 KAH 草稿提交 |
 | 桌面审核并发布 | 已实现 | 审核回归；可见窗口人工流程仍待完成 |
 | Worker/LanceDB 文档检索 | 保持原链路 | 不把它伪装成 KAH 目录索引；需单独完成百万 chunks 性能门槛 |
 | 外部 Skill 目录映射 | 已实现 | 自动化测试与 2026-08-30 临时外部目录真实 HTTP/文件系统验收通过；可见窗口人工流程仍待完成 |

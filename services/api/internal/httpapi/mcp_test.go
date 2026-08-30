@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/model"
@@ -52,6 +53,7 @@ func TestMCPReadSearchDirectoryAndResource(t *testing.T) {
 	if err := json.Unmarshal(created.Body.Bytes(), &library); err != nil {
 		t.Fatal(err)
 	}
+	document := createReadyImportDocument(t, server, library.ID, "mcp-source.md", "mcp-source-hash")
 	stable := seedStableKnowledge(t, server, library.ID)
 	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "read", "scopes": []string{"mcp_read"}, "libraryIds": []string{library.ID}}, "desktop-test")
 	if tokenResponse.Code != http.StatusCreated {
@@ -69,8 +71,25 @@ func TestMCPReadSearchDirectoryAndResource(t *testing.T) {
 	templates := callMCP(t, handler, "/mcp/read", token.Secret, "resources/templates/list", map[string]any{})
 	templateResult, ok := templates["result"].(map[string]any)
 	templateList, listOK := templateResult["resourceTemplates"].([]any)
-	if !ok || !listOK || len(templateList) != 1 {
+	if !ok || !listOK || len(templateList) != 2 {
 		t.Fatalf("resource template contract missing: %#v", templates)
+	}
+	resources := callMCP(t, handler, "/mcp/read", token.Secret, "resources/list", map[string]any{})
+	resourceResult, resourceOK := resources["result"].(map[string]any)
+	resourceList, resourcesOK := resourceResult["resources"].([]any)
+	if !resourceOK || !resourcesOK {
+		t.Fatalf("resource listing missing: %#v", resources)
+	}
+	foundDocument := false
+	for _, rawResource := range resourceList {
+		item, itemOK := rawResource.(map[string]any)
+		if itemOK && item["uri"] == storage.DocumentURI(document.ID) {
+			foundDocument = true
+			break
+		}
+	}
+	if !foundDocument {
+		t.Fatalf("imported document was not listed as an MCP resource: %#v", resources)
 	}
 	search := callMCP(t, handler, "/mcp/read", token.Secret, "tools/call", map[string]any{"name": "knowledge_search", "arguments": map[string]any{"query": "目录", "libraryIds": []string{library.ID}}})
 	result := search["result"].(map[string]any)
@@ -84,6 +103,60 @@ func TestMCPReadSearchDirectoryAndResource(t *testing.T) {
 	resource := callMCP(t, handler, "/mcp/read", token.Secret, "resources/read", map[string]any{"uri": stable.URI + "?revision=1#claim"})
 	if resource["result"] == nil {
 		t.Fatalf("resource read failed: %#v", resource)
+	}
+	documentResource := callMCP(t, handler, "/mcp/read", token.Secret, "resources/read", map[string]any{"uri": storage.DocumentURI(document.ID)})
+	documentResult, documentResultOK := documentResource["result"].(map[string]any)
+	contents, contentsOK := documentResult["contents"].([]any)
+	if !documentResultOK || !contentsOK || len(contents) != 1 {
+		t.Fatalf("document resource read failed: %#v", documentResource)
+	}
+	content, contentOK := contents[0].(map[string]any)
+	if !contentOK || !strings.Contains(content["text"].(string), "可引用的来源正文") {
+		t.Fatalf("document resource did not preserve indexed text: %#v", documentResource)
+	}
+}
+
+func TestMCPDocumentSourceValidationPinsCurrentSnapshot(t *testing.T) {
+	server, handler := testServer(t)
+	created := request(t, handler, http.MethodPost, "/api/v1/libraries", map[string]any{"name": "MCP documents"}, "desktop-test")
+	var library model.Library
+	if err := json.Unmarshal(created.Body.Bytes(), &library); err != nil {
+		t.Fatal(err)
+	}
+	document := createReadyImportDocument(t, server, library.ID, "source.md", "source-hash")
+	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "manage", "scopes": []string{"mcp_manage"}, "libraryIds": []string{library.ID}}, "desktop-test")
+	var token model.AgentToken
+	if err := json.Unmarshal(tokenResponse.Body.Bytes(), &token); err != nil {
+		t.Fatal(err)
+	}
+	candidate := map[string]any{
+		"schema": "kah-knowledge/v1", "type": "claim", "title": "导入文档来源", "description": "验证 MCP 草稿绑定当前文档快照。", "language": "zh-CN", "duplicate_intent": "independent",
+		"sections": []map[string]any{{"id": "claim", "heading": "主张", "content": "导入文档可以作为有快照的知识来源。[^doc]"}},
+		"sources":  []map[string]any{{"id": "doc", "resource": storage.DocumentURI(document.ID), "title": document.Title, "snapshot": map[string]any{"status": "captured", "content_hash": document.ContentHash}}},
+	}
+	validated := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_validate", "arguments": map[string]any{"libraryId": library.ID, "candidate": candidate}})
+	validationResult, ok := validated["result"].(map[string]any)
+	if !ok || validationResult["isError"] == true {
+		t.Fatalf("valid document source was rejected: %#v", validated)
+	}
+	wrongHash := map[string]any{
+		"schema": "kah-knowledge/v1", "type": "claim", "title": "错误快照", "description": "验证过期文档来源会被拒绝。", "language": "zh-CN",
+		"sections": []map[string]any{{"id": "claim", "heading": "主张", "content": "来源快照必须一致。[^doc]"}},
+		"sources":  []map[string]any{{"id": "doc", "resource": storage.DocumentURI(document.ID), "title": document.Title, "snapshot": map[string]any{"status": "captured", "content_hash": "stale-hash"}}},
+	}
+	invalid := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_validate", "arguments": map[string]any{"libraryId": library.ID, "candidate": wrongHash}})
+	invalidResult, invalidOK := invalid["result"].(map[string]any)
+	if !invalidOK || invalidResult["isError"] != true {
+		t.Fatalf("stale document snapshot was not rejected: %#v", invalid)
+	}
+	submitted := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submit", "arguments": map[string]any{"libraryId": library.ID, "mode": "create", "candidate": candidate, "idempotencyKey": "document-source-1"}})
+	submittedResult, submittedOK := submitted["result"].(map[string]any)
+	if !submittedOK {
+		t.Fatalf("document source submission failed: %#v", submitted)
+	}
+	structured, structuredOK := submittedResult["structuredContent"].(map[string]any)
+	if !structuredOK || structured["reviewStatus"] != "pending_review" {
+		t.Fatalf("document source submission was not review-gated: %#v", submitted)
 	}
 }
 

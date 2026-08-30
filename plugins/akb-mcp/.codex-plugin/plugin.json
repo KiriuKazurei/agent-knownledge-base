@@ -1,0 +1,34 @@
+{
+  "name": "akb-mcp",
+  "version": "0.1.0+codex.20260830105412",
+  "description": "Connect Codex to the local Agent Knowledge Base MCP read and manage endpoints.",
+  "author": {
+    "name": "KiriuKazurei"
+  },
+  "repository": "https://github.com/KiriuKazurei/agent-knownledge-base",
+  "license": "MIT",
+  "keywords": [
+    "knowledge-base",
+    "mcp",
+    "local-first",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Agent Knowledge Base MCP",
+    "shortDescription": "Read and submit knowledge through the local AKB service.",
+    "longDescription": "Connect Codex to Agent Knowledge Base for scoped knowledge search, resource reading, validation, and review-gated knowledge submissions.",
+    "developerName": "KiriuKazurei",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Search Agent Knowledge Base for relevant project knowledge.",
+      "Read an Agent Knowledge Base resource and summarize its evidence.",
+      "Validate and submit a knowledge draft for human review."
+    ]
+  }
+}

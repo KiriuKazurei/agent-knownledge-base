@@ -1,0 +1,20 @@
+{
+  "name": "akb-local",
+  "interface": {
+    "displayName": "Agent Knowledge Base"
+  },
+  "plugins": [
+    {
+      "name": "akb-mcp",
+      "source": {
+        "source": "local",
+        "path": "./plugins/akb-mcp"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

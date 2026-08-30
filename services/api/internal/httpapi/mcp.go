@@ -126,9 +126,12 @@ func (s *Server) dispatchMCP(ctx context.Context, c *gin.Context, mode string, r
 	case "tools/list":
 		return gin.H{"tools": mcpTools(mode)}, nil
 	case "resources/list":
-		return gin.H{"resources": mcpResources(mode)}, nil
+		return s.mcpListResources(ctx, c, mode)
 	case "resources/templates/list":
-		return gin.H{"resourceTemplates": []gin.H{{"uriTemplate": "kah://knowledge/{knowledgeId}", "name": "KAH knowledge revision", "description": "A KAH knowledge resource; add ?revision=N for a historical published revision and #section-id for one section.", "mimeType": "text/markdown"}}}, nil
+		return gin.H{"resourceTemplates": []gin.H{
+			{"uriTemplate": "kah://knowledge/{knowledgeId}", "name": "KAH knowledge revision", "description": "A KAH knowledge resource; add ?revision=N for a historical published revision and #section-id for one section.", "mimeType": "text/markdown"},
+			{"uriTemplate": "kah://document/{documentId}", "name": "Imported source document", "description": "An indexed imported document in the token-scoped library; use its content as traceable source material.", "mimeType": "text/markdown"},
+		}}, nil
 	case "resources/read":
 		var input struct {
 			URI string `json:"uri"`
@@ -182,6 +185,44 @@ func mcpResources(mode string) []gin.H {
 		resources = append(resources, gin.H{"uri": "kah://skill/manage/v1", "name": "KAH MCP Manage Skill", "mimeType": "text/markdown"})
 	}
 	return resources
+}
+
+func (s *Server) mcpListResources(ctx context.Context, c *gin.Context, mode string) (gin.H, *mcpRPCError) {
+	resources := mcpResources(mode)
+	libraries, err := s.allowedMCPLibraries(c, nil)
+	if err != nil {
+		return nil, &mcpRPCError{Code: -32003, Message: "requested library is outside token scope"}
+	}
+	value, _ := c.Get("identity")
+	id, _ := value.(identity)
+	documents := []model.Document{}
+	if id.Desktop || len(libraries) == 0 {
+		documents, err = s.Store.ListDocuments(ctx, "")
+	} else {
+		for _, libraryID := range libraries {
+			items, listErr := s.Store.ListDocuments(ctx, libraryID)
+			if listErr != nil {
+				err = listErr
+				break
+			}
+			documents = append(documents, items...)
+		}
+	}
+	if err != nil {
+		return nil, &mcpRPCError{Code: -32000, Message: err.Error()}
+	}
+	for _, document := range documents {
+		if document.Status != "ready" {
+			continue
+		}
+		resources = append(resources, gin.H{
+			"uri":         storage.DocumentURI(document.ID),
+			"name":        document.Title,
+			"description": "Imported source document (content hash " + document.ContentHash + ")",
+			"mimeType":    documentMediaType(document),
+		})
+	}
+	return gin.H{"resources": resources}, nil
 }
 
 func (s *Server) allowedMCPLibraries(c *gin.Context, requested []string) ([]string, error) {
@@ -293,6 +334,12 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 			return fail("FORBIDDEN_SCOPE", "library is outside token scope")
 		}
 		result := storage.ValidateKnowledgePayload(input.Candidate, true)
+		if result.Valid {
+			for _, referenceIssue := range s.validateMCPKnowledgeReferences(ctx, c, result.Normalized) {
+				result.Errors = append(result.Errors, model.KnowledgeValidationIssue{Code: "SOURCE_INVALID", Path: "sources", Message: referenceIssue})
+			}
+			result.Valid = len(result.Errors) == 0
+		}
 		return gin.H{"content": []gin.H{{"type": "text", "text": validationMessage(result)}}, "structuredContent": result, "isError": !result.Valid}
 	case "knowledge_submit":
 		if mode != "manage" {
@@ -381,6 +428,27 @@ func (s *Server) mcpReadResource(ctx context.Context, c *gin.Context, mode, uri 
 		}
 		return nil, errors.New("resource not available")
 	}
+	if strings.HasPrefix(uri, "kah://document/") {
+		documentID, err := storage.ParseDocumentURI(uri)
+		if err != nil {
+			return nil, err
+		}
+		detail, err := s.Store.GetDocument(ctx, documentID)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.allowedMCPLibraries(c, []string{detail.LibraryID}); err != nil {
+			return nil, errors.New("FORBIDDEN_SCOPE")
+		}
+		if detail.Status != "ready" {
+			return nil, errors.New("document is not ready")
+		}
+		text := documentResourceText(detail)
+		if text == "" {
+			return nil, errors.New("document has no indexed text")
+		}
+		return gin.H{"contents": []gin.H{{"uri": uri, "mimeType": documentMediaType(detail.Document), "text": text}}}, nil
+	}
 	item, err := s.Store.GetKnowledge(ctx, uri, mode == "manage")
 	if err != nil {
 		return nil, err
@@ -414,6 +482,29 @@ func (s *Server) mcpReadResource(ctx context.Context, c *gin.Context, mode, uri 
 func (s *Server) validateMCPKnowledgeReferences(ctx context.Context, c *gin.Context, payload model.KnowledgePayload) []string {
 	issues := []string{}
 	for _, source := range payload.Sources {
+		if strings.HasPrefix(source.Resource, "kah://document/") {
+			documentID, parseErr := storage.ParseDocumentURI(source.Resource)
+			if parseErr != nil {
+				issues = append(issues, "source "+source.ID+" has an invalid document URI")
+				continue
+			}
+			detail, getErr := s.Store.GetDocument(ctx, documentID)
+			if getErr != nil {
+				issues = append(issues, "source "+source.ID+" document was not found")
+				continue
+			}
+			if _, scopeErr := s.allowedMCPLibraries(c, []string{detail.LibraryID}); scopeErr != nil {
+				issues = append(issues, "source "+source.ID+" is outside token scope")
+				continue
+			}
+			if detail.Status != "ready" {
+				issues = append(issues, "source "+source.ID+" document is not ready")
+			}
+			if source.Snapshot.ContentHash == "" || source.Snapshot.ContentHash != detail.ContentHash {
+				issues = append(issues, "source "+source.ID+" document content hash does not match the current snapshot")
+			}
+			continue
+		}
 		if !strings.HasPrefix(source.Resource, "kah://knowledge/") {
 			continue
 		}
@@ -451,6 +542,23 @@ func (s *Server) validateMCPKnowledgeReferences(ctx context.Context, c *gin.Cont
 		}
 	}
 	return issues
+}
+
+func documentMediaType(document model.Document) string {
+	if strings.TrimSpace(document.MediaType) == "" {
+		return "text/markdown"
+	}
+	return document.MediaType
+}
+
+func documentResourceText(detail model.DocumentDetail) string {
+	parts := make([]string, 0, len(detail.Preview))
+	for _, chunk := range detail.Preview {
+		if text := strings.TrimSpace(chunk.Text); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n\n"))
 }
 
 func (s *Server) captureHTTPSnapshots(ctx context.Context, payload *model.KnowledgePayload) {

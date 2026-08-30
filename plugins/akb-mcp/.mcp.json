@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "akb-read": {
+      "type": "http",
+      "url": "http://127.0.0.1:48761/mcp/read",
+      "bearer_token_env_var": "AKB_MCP_TOKEN"
+    },
+    "akb-manage": {
+      "type": "http",
+      "url": "http://127.0.0.1:48761/mcp/manage",
+      "bearer_token_env_var": "AKB_MCP_TOKEN"
+    }
+  }
+}
