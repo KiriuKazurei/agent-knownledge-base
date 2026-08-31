@@ -142,12 +142,90 @@ class HybridIndex:
             rows = [{"id": item["id"], "document_id": item["documentId"], "text": item["text"], "location_json": json.dumps(item.get("location", {}), ensure_ascii=False), "content_hash": item.get("contentHash", ""), "vector": item.get("vector") or self._vector(item.get("text", ""))} for item in values]
             table = db.create_table("chunks", data=rows, mode="overwrite")
             try:
-                table.create_fts_index("text", replace=True)
+                from lancedb.index import FTS
+                table.create_index("text", config=FTS(), replace=True)
             except Exception:
                 pass
         except Exception:
             # The portable index is authoritative and remains usable if a native wheel fails.
             pass
+
+    @staticmethod
+    def _lance_item(row, library_id):
+        try:
+            location = json.loads(row.get("location_json", "{}"))
+        except (TypeError, ValueError):
+            location = {}
+        return {
+            "id": row["id"],
+            "documentId": row["document_id"],
+            "text": row.get("text", ""),
+            "location": location,
+            "contentHash": row.get("content_hash", ""),
+            "libraryId": library_id,
+        }
+
+    def _search_lance(self, query, query_vector, library_ids, top_k, retrieval_mode):
+        """Search the native LanceDB tables when every requested library has one.
+
+        The portable JSON index remains the availability fallback, but it must
+        not be reported as LanceDB search just because a table was synced.
+        """
+        if self.lancedb is None:
+            return None
+        fetch_limit = max(50, min(int(top_k) * 8, 500))
+        lexical_candidates = []
+        vector_candidates = []
+        try:
+            for library_id in library_ids:
+                lance_root = self._path(library_id).parent / "lance"
+                if not lance_root.exists():
+                    return None
+                db = self.lancedb.connect(str(lance_root))
+                tables = db.list_tables() if hasattr(db, "list_tables") else db.table_names()
+                tables = getattr(tables, "tables", tables)
+                if "chunks" not in tables:
+                    return None
+                table = db.open_table("chunks")
+                if retrieval_mode != "vector":
+                    for row in table.search(query, query_type="fts").limit(fetch_limit).to_list():
+                        item = self._lance_item(row, library_id)
+                        item["lexical"] = max(0.0, float(row.get("_score", 0.0)))
+                        lexical_candidates.append(item)
+                if retrieval_mode != "lexical":
+                    for row in table.search(query_vector).limit(fetch_limit).to_list():
+                        item = self._lance_item(row, library_id)
+                        item["vector"] = 1.0 / (1.0 + max(0.0, float(row.get("_distance", 0.0))))
+                        vector_candidates.append(item)
+        except Exception:
+            return None
+        return self._rank_candidates(lexical_candidates, vector_candidates, top_k, retrieval_mode, "lancedb")
+
+    def _rank_candidates(self, lexical_candidates, vector_candidates, top_k, retrieval_mode, search_backend):
+        lexical_candidates.sort(key=lambda item: (item["lexical"], item.get("id", "")), reverse=True)
+        vector_candidates.sort(key=lambda item: (item["vector"], item.get("id", "")), reverse=True)
+        lexical_rank = {item["id"]: index + 1 for index, item in enumerate(lexical_candidates)}
+        vector_rank = {item["id"]: index + 1 for index, item in enumerate(vector_candidates)}
+        by_id = {item["id"]: dict(item) for item in lexical_candidates + vector_candidates}
+        for item in by_id.values():
+            item.setdefault("lexical", 0.0)
+            item.setdefault("vector", 0.0)
+            item["fusion"] = (1 / (60 + lexical_rank[item["id"]]) if item["id"] in lexical_rank else 0) + (1 / (60 + vector_rank[item["id"]]) if item["id"] in vector_rank else 0)
+            if retrieval_mode == "lexical":
+                item["final"] = item["lexical"]
+            elif retrieval_mode == "vector":
+                item["final"] = item["vector"]
+            else:
+                item["final"] = item["fusion"]
+        candidates = list(by_id.values())
+        candidates.sort(key=lambda item: (item["final"], item.get("vector", 0), item.get("lexical", 0), item.get("id", "")), reverse=True)
+        return {
+            "results": candidates[:max(1, min(int(top_k), 100))],
+            "backend": self.backend,
+            "searchBackend": search_backend,
+            "degraded": False,
+            "retrievalMode": retrieval_mode,
+        }
 
     def search(self, query, library_ids, top_k=10, retrieval_mode="hybrid"):
         terms = self._features(query)
@@ -156,6 +234,9 @@ class HybridIndex:
         vector_candidates = []
         with self.lock:
             libraries = library_ids or [entry.name for entry in self.root.iterdir() if entry.is_dir()]
+            native = self._search_lance(query, query_vector, libraries, top_k, retrieval_mode)
+            if native is not None:
+                return native
             for library_id in libraries:
                 for item in self._load(library_id):
                     text = item.get("text", "").lower()
@@ -169,20 +250,4 @@ class HybridIndex:
                     if value["vector"] > 0:
                         vector_candidates.append(value)
 
-        lexical_candidates.sort(key=lambda item: (item["lexical"], item.get("id", "")), reverse=True)
-        vector_candidates.sort(key=lambda item: (item["vector"], item.get("id", "")), reverse=True)
-        lexical_rank = {item["id"]: index + 1 for index, item in enumerate(lexical_candidates)}
-        vector_rank = {item["id"]: index + 1 for index, item in enumerate(vector_candidates)}
-        by_id = {item["id"]: item for item in lexical_candidates + vector_candidates}
-        candidates = []
-        for item in by_id.values():
-            item["fusion"] = (1 / (60 + lexical_rank[item["id"]]) if item["id"] in lexical_rank else 0) + (1 / (60 + vector_rank[item["id"]]) if item["id"] in vector_rank else 0)
-            if retrieval_mode == "lexical":
-                item["final"] = item["lexical"]
-            elif retrieval_mode == "vector":
-                item["final"] = item["vector"]
-            else:
-                item["final"] = item["fusion"]
-            candidates.append(item)
-        candidates.sort(key=lambda item: (item["final"], item.get("vector", 0), item.get("lexical", 0), item.get("id", "")), reverse=True)
-        return {"results": candidates[:max(1, min(int(top_k), 100))], "backend": self.backend, "degraded": False, "retrievalMode": retrieval_mode}
+        return self._rank_candidates(lexical_candidates, vector_candidates, top_k, retrieval_mode, "portable-json")

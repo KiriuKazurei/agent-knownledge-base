@@ -7,6 +7,7 @@ import math
 import sys
 import tempfile
 import time
+import platform
 from pathlib import Path
 
 WORKER_ROOT = Path(__file__).resolve().parents[1]
@@ -70,8 +71,11 @@ def scale_fixture(fixture, chunk_count):
     return scaled
 
 
-def run_suite(fixture, data_root, top_k, iterations, warmup):
+def run_suite(fixture, data_root, top_k, iterations, warmup, require_lancedb=False):
     index = build_index(fixture, data_root)
+    probe = index.search(fixture["queries"][0]["query"], [fixture["libraryId"]], top_k, "hybrid")
+    if require_lancedb and probe.get("searchBackend") != "lancedb":
+        raise RuntimeError("native LanceDB search was required but unavailable; refusing to benchmark the portable fallback")
     for _ in range(warmup):
         for mode in ("lexical", "vector", "hybrid"):
             for query in fixture["queries"]:
@@ -80,7 +84,7 @@ def run_suite(fixture, data_root, top_k, iterations, warmup):
         mode: measure(index, fixture, top_k, iterations, mode)
         for mode in ("lexical", "vector", "hybrid")
     }
-    return index.backend, reports
+    return index.backend, probe.get("searchBackend"), reports
 
 
 def measure(index, fixture, top_k, iterations, mode):
@@ -109,6 +113,7 @@ def measure(index, fixture, top_k, iterations, mode):
         "p99Ms": percentile(samples, 0.99),
         "minMs": min(samples),
         "maxMs": max(samples),
+        "searchBackend": response.get("searchBackend"),
     }
 
 
@@ -134,6 +139,7 @@ def main():
     )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--require-lancedb", action="store_true", help="fail unless all benchmark queries use native LanceDB")
     args = parser.parse_args()
     if args.iterations < 1 or args.warmup < 0 or args.stress_iterations < 1:
         parser.error("iterations must be positive and warmup cannot be negative")
@@ -144,8 +150,8 @@ def main():
 
     fixture = load_fixture(args.fixture.resolve())
     with tempfile.TemporaryDirectory(prefix="kah-retrieval-benchmark-") as data_root:
-        backend, reports = run_suite(
-            fixture, data_root, args.top_k, args.iterations, args.warmup
+        backend, search_backend, reports = run_suite(
+            fixture, data_root, args.top_k, args.iterations, args.warmup, args.require_lancedb
         )
 
     report = {
@@ -158,6 +164,9 @@ def main():
         "iterations": args.iterations,
         "warmup": args.warmup,
         "backend": backend,
+        "searchBackend": search_backend,
+        "nativeLanceRequired": args.require_lancedb,
+        "pythonVersion": platform.python_version(),
         "recallTarget": 0.80,
         "referenceScale": len(fixture["documents"]) >= 1000000,
         "modes": reports,
@@ -165,15 +174,17 @@ def main():
     if args.stress_chunks is not None:
         stress_fixture = scale_fixture(fixture, args.stress_chunks)
         with tempfile.TemporaryDirectory(prefix="kah-retrieval-stress-") as data_root:
-            stress_backend, stress_reports = run_suite(
+            stress_backend, stress_search_backend, stress_reports = run_suite(
                 stress_fixture,
                 data_root,
                 args.top_k,
                 args.stress_iterations,
                 args.warmup,
+                args.require_lancedb,
             )
         report["stress"] = {
             "backend": stress_backend,
+            "searchBackend": stress_search_backend,
             "documentCount": len(stress_fixture["documents"]),
             "chunkCount": len(stress_fixture["documents"]),
             "queryCount": len(stress_fixture["queries"]),

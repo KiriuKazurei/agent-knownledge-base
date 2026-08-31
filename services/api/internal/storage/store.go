@@ -13,6 +13,7 @@ import (
 	"io/fs"
 	"mime"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,6 +42,16 @@ type QueuedJob struct {
 	model.Job
 	Payload      map[string]any
 	PayloadError error
+}
+
+// BackupManifest describes the integrity metadata stored in a .kahbackup
+// archive. File keys are relative to the restored data root.
+type BackupManifest struct {
+	Format         string            `json:"format"`
+	Version        int               `json:"version"`
+	CreatedAt      time.Time         `json:"createdAt"`
+	IncludeIndexes bool              `json:"includeIndexes"`
+	Files          map[string]string `json:"files"`
 }
 
 func Open(dataRoot string) (*Store, error) {
@@ -252,7 +263,7 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS kah_reviews (
 			id TEXT PRIMARY KEY, submission_id TEXT NOT NULL REFERENCES kah_submissions(id) ON DELETE CASCADE,
 			reviewer_type TEXT NOT NULL, reviewer TEXT NOT NULL, decision TEXT NOT NULL,
-			reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+			confidence REAL NOT NULL DEFAULT 0, reason TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS legacy_submission_archives (
 			submission_id TEXT PRIMARY KEY REFERENCES knowledge_submissions(id) ON DELETE CASCADE,
@@ -292,6 +303,15 @@ func (s *Store) migrate() error {
 		} else if err != nil {
 			return fmt.Errorf("migration failed checking libraries.%s: %w", column.name, err)
 		}
+	}
+	var confidenceColumn string
+	err = s.DB.QueryRow(`SELECT name FROM pragma_table_info('kah_reviews') WHERE name='confidence'`).Scan(&confidenceColumn)
+	if errors.Is(err, sql.ErrNoRows) {
+		if _, err := s.DB.Exec(`ALTER TABLE kah_reviews ADD COLUMN confidence REAL NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("migration failed adding kah_reviews.confidence: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("migration failed checking kah_reviews.confidence: %w", err)
 	}
 	// Legacy Markdown submissions lack stable section IDs and exact citations.
 	// Preserve them for audit, but prevent their implicit use by the v1 workflow.
@@ -1661,7 +1681,7 @@ func (s *Store) CreateBackup(ctx context.Context, includeIndexes bool) (string, 
 		return "", "", err
 	}
 	stamp := time.Now().UTC().Format("20060102T150405Z")
-	name := "knowledge-agent-hub-" + stamp + ".kahbackup"
+	name := "knowledge-agent-hub-" + stamp + "-" + uuid.NewString() + ".kahbackup"
 	target := filepath.Join(s.DataRoot, "backups", name)
 	file, err := os.Create(target)
 	if err != nil {
@@ -1711,7 +1731,7 @@ func (s *Store) CreateBackup(ctx context.Context, includeIndexes bool) (string, 
 	})
 	if walkErr == nil {
 		manifest, _ := zw.Create("manifest.json")
-		_ = json.NewEncoder(manifest).Encode(map[string]any{"format": "kahbackup", "version": 1, "createdAt": time.Now().UTC(), "includeIndexes": includeIndexes, "files": hashes})
+		_ = json.NewEncoder(manifest).Encode(BackupManifest{Format: "kahbackup", Version: 1, CreatedAt: time.Now().UTC(), IncludeIndexes: includeIndexes, Files: hashes})
 	}
 	closeErr := zw.Close()
 	fileErr := file.Close()
@@ -1732,6 +1752,212 @@ func (s *Store) CreateBackup(ctx context.Context, includeIndexes bool) (string, 
 	h := sha256.New()
 	_, err = io.Copy(h, opened)
 	return filepath.ToSlash(filepath.Join("backups", name)), hex.EncodeToString(h.Sum(nil)), err
+}
+
+// VerifyBackup validates the archive structure and every payload digest before
+// any restore is attempted. It deliberately accepts only backup files rooted
+// under this store's backups directory.
+func (s *Store) VerifyBackup(ctx context.Context, relativePath string) (BackupManifest, string, error) {
+	if err := ctx.Err(); err != nil {
+		return BackupManifest{}, "", err
+	}
+	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
+	if filepath.IsAbs(relativePath) || !strings.HasPrefix(relativePath, "backups/") || !strings.HasSuffix(relativePath, ".kahbackup") {
+		return BackupManifest{}, "", fmt.Errorf("backup path must be a .kahbackup file under backups")
+	}
+	archivePath, err := s.Resolve(relativePath)
+	if err != nil {
+		return BackupManifest{}, "", err
+	}
+	digest, err := fileSHA256(archivePath)
+	if err != nil {
+		return BackupManifest{}, "", err
+	}
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return BackupManifest{}, "", err
+	}
+	defer reader.Close()
+
+	manifestCount := 0
+	manifest := BackupManifest{}
+	actual := map[string]string{}
+	for _, entry := range reader.File {
+		if err := ctx.Err(); err != nil {
+			return BackupManifest{}, "", err
+		}
+		if entry.Name == "manifest.json" {
+			manifestCount++
+			if manifestCount != 1 || entry.FileInfo().IsDir() || entry.Mode()&os.ModeSymlink != 0 {
+				return BackupManifest{}, "", fmt.Errorf("invalid backup manifest entry")
+			}
+			stream, err := entry.Open()
+			if err != nil {
+				return BackupManifest{}, "", err
+			}
+			err = json.NewDecoder(stream).Decode(&manifest)
+			stream.Close()
+			if err != nil {
+				return BackupManifest{}, "", fmt.Errorf("decode backup manifest: %w", err)
+			}
+			continue
+		}
+		if entry.FileInfo().IsDir() || entry.Mode()&os.ModeSymlink != 0 || !strings.HasPrefix(entry.Name, "data/") {
+			return BackupManifest{}, "", fmt.Errorf("invalid backup entry %q", entry.Name)
+		}
+		rel, err := cleanBackupEntry(strings.TrimPrefix(entry.Name, "data/"))
+		if err != nil {
+			return BackupManifest{}, "", err
+		}
+		if _, exists := actual[rel]; exists {
+			return BackupManifest{}, "", fmt.Errorf("duplicate backup entry %q", rel)
+		}
+		stream, err := entry.Open()
+		if err != nil {
+			return BackupManifest{}, "", err
+		}
+		h := sha256.New()
+		_, copyErr := io.Copy(h, stream)
+		closeErr := stream.Close()
+		if copyErr != nil {
+			return BackupManifest{}, "", copyErr
+		}
+		if closeErr != nil {
+			return BackupManifest{}, "", closeErr
+		}
+		actual[rel] = hex.EncodeToString(h.Sum(nil))
+	}
+	if manifestCount != 1 || manifest.Format != "kahbackup" || manifest.Version != 1 || manifest.Files == nil {
+		return BackupManifest{}, "", fmt.Errorf("unsupported or missing backup manifest")
+	}
+	if len(actual) != len(manifest.Files) {
+		return BackupManifest{}, "", fmt.Errorf("backup manifest file count does not match archive")
+	}
+	for rel, expected := range manifest.Files {
+		clean, err := cleanBackupEntry(rel)
+		if err != nil || clean != rel {
+			return BackupManifest{}, "", fmt.Errorf("invalid manifest path %q", rel)
+		}
+		if actual[rel] != expected {
+			return BackupManifest{}, "", fmt.Errorf("backup payload hash mismatch for %q", rel)
+		}
+	}
+	return manifest, digest, nil
+}
+
+// RestoreBackupTo extracts a verified archive to a previously non-existent
+// directory. Active data roots are never overwritten; callers can inspect and
+// open the restored directory before a deliberate service restart/switchover.
+func (s *Store) RestoreBackupTo(ctx context.Context, relativePath, destination string) (BackupManifest, error) {
+	manifest, _, err := s.VerifyBackup(ctx, relativePath)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	destination = filepath.Clean(destination)
+	if !filepath.IsAbs(destination) {
+		return BackupManifest{}, fmt.Errorf("restore destination must be absolute")
+	}
+	if _, err := os.Stat(destination); err == nil {
+		return BackupManifest{}, fmt.Errorf("restore destination already exists")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return BackupManifest{}, err
+	}
+	parent := filepath.Dir(destination)
+	if info, err := os.Stat(parent); err != nil || !info.IsDir() {
+		return BackupManifest{}, fmt.Errorf("restore parent is not an existing directory")
+	}
+	stage, err := os.MkdirTemp(parent, ".kahrestore-")
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	keepStage := false
+	defer func() {
+		if !keepStage {
+			_ = os.RemoveAll(stage)
+		}
+	}()
+	archivePath, err := s.Resolve(relativePath)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return BackupManifest{}, err
+	}
+	for _, entry := range reader.File {
+		if entry.Name == "manifest.json" {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			reader.Close()
+			return BackupManifest{}, err
+		}
+		rel, err := cleanBackupEntry(strings.TrimPrefix(entry.Name, "data/"))
+		if err != nil {
+			reader.Close()
+			return BackupManifest{}, err
+		}
+		target := filepath.Join(stage, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
+			reader.Close()
+			return BackupManifest{}, err
+		}
+		stream, err := entry.Open()
+		if err != nil {
+			reader.Close()
+			return BackupManifest{}, err
+		}
+		file, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o640)
+		if err == nil {
+			_, err = io.Copy(file, stream)
+		}
+		closeFileErr := fileClose(file)
+		closeStreamErr := stream.Close()
+		if err != nil {
+			reader.Close()
+			return BackupManifest{}, err
+		}
+		if closeFileErr != nil || closeStreamErr != nil {
+			reader.Close()
+			return BackupManifest{}, errors.Join(closeFileErr, closeStreamErr)
+		}
+	}
+	if err := reader.Close(); err != nil {
+		return BackupManifest{}, err
+	}
+	if err := os.Rename(stage, destination); err != nil {
+		return BackupManifest{}, err
+	}
+	keepStage = true
+	return manifest, nil
+}
+
+func cleanBackupEntry(value string) (string, error) {
+	value = path.Clean(filepath.ToSlash(value))
+	if value == "." || value == ".." || strings.HasPrefix(value, "../") || strings.HasPrefix(value, "/") {
+		return "", fmt.Errorf("unsafe backup entry path %q", value)
+	}
+	return value, nil
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func fileClose(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	return file.Close()
 }
 
 func mustInfo(entry fs.DirEntry) fs.FileInfo {

@@ -47,6 +47,8 @@ function projectRoot(): string {
 }
 
 function dataRoot(): string {
+  const portableExecutableDirectory = process.env.PORTABLE_EXECUTABLE_DIR?.trim()
+  if (portableExecutableDirectory) return path.join(portableExecutableDirectory, 'data')
   const portable = process.env.KAH_PORTABLE === '1' || existsSync(path.join(path.dirname(app.getPath('exe')), 'portable.flag'))
   return portable ? path.join(path.dirname(app.getPath('exe')), 'data') : path.join(app.getPath('userData'), 'data')
 }

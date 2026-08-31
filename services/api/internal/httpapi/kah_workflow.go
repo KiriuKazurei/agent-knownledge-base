@@ -9,6 +9,7 @@ import (
 
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/model"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/secrets"
+	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/storage"
 )
 
 // runKAHKnowledgeReview is the KAH v1 automatic review worker. It is kept
@@ -86,11 +87,11 @@ func (s *Server) runKAHKnowledgeReview(jobID, submissionID string) {
 	for _, issue := range output.Issues {
 		issues = append(issues, issue.Severity+":"+issue.Code+":"+issue.Message)
 	}
-	if output.Decision == "approve" && (output.Confidence < 0.85 || hasBlockingReviewIssue(output.Issues)) {
+	if output.Decision == "approve" && (output.Confidence <= storage.KAHAgentApprovalConfidenceThreshold || hasBlockingReviewIssue(output.Issues)) {
 		output.Decision = "needs_human"
-		output.Reason = "Model confidence or issue severity requires human review: " + output.Reason
+		output.Reason = "Model confidence must exceed 95 percent and have no blocking issue: " + output.Reason
 	}
-	changed, err := s.Store.RecordKAHSubmissionReview(ctx, submissionID, provider.ID, output.Decision, output.Reason)
+	changed, err := s.Store.RecordKAHSubmissionReviewWithConfidence(ctx, submissionID, provider.ID, output.Decision, output.Reason, output.Confidence)
 	if err != nil {
 		fail(err)
 		return

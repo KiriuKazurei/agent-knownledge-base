@@ -77,7 +77,7 @@ Electron React ───────┐
   - 知识库、文档、目录、标签、固定搜索 CRUD。
   - 文件/目录/URL 导入、任务状态、取消和重新索引。
   - `POST /mcp/read`：Agent 通过 MCP `knowledge_search`、`knowledge_get` 和 resources 读取稳定 KAH 知识。
-  - `POST /mcp/manage`：Agent 通过 MCP 校验并提交 review-only KAH draft，不允许发布或删除。
+  - `POST /mcp/manage`：Agent 通过 MCP 列出、读取、比较、校验、提交并审核绑定知识库中的 KAH draft；仅信度严格大于 0.95 且证据/校验通过时批准并发布，否则转人工审核。
   - `/api/v1/knowledge/*`：桌面端 KAH 目录、revision 和审核管理。
   - 提供商连接测试、模型选择、LM Studio 管理、令牌管理、备份恢复和健康状态。
 - `QueryRequest` 包含查询文本、知识库范围、标签/目录/时间过滤、`topK`、检索模式及 `evidence|answer` 响应模式。

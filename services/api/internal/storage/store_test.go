@@ -66,6 +66,99 @@ func TestResolveRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestBackupVerifiesAndRestoresToNewDataRoot(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	library, err := store.CreateLibrary(ctx, "Backup Library", "restore test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objectPath, _, err := store.PutObject(strings.NewReader("backup payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(store.DataRoot, "indexes", library.ID, "v1"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(store.DataRoot, "indexes", library.ID, "v1", "chunks.json"), []byte(`[{"id":"chunk-1"}]`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	backupPath, archiveDigest, err := store.CreateBackup(ctx, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, verifiedDigest, err := store.VerifyBackup(ctx, backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verifiedDigest != archiveDigest || !manifest.IncludeIndexes || len(manifest.Files) == 0 {
+		t.Fatalf("unexpected verified backup: digest=%s manifest=%+v", verifiedDigest, manifest)
+	}
+	destination := filepath.Join(t.TempDir(), "restored")
+	if _, err := store.RestoreBackupTo(ctx, backupPath, destination); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, filepath.FromSlash(objectPath))); err != nil {
+		t.Fatalf("restored object is missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(destination, "indexes", library.ID, "v1", "chunks.json")); err != nil {
+		t.Fatalf("restored index is missing: %v", err)
+	}
+	restored, err := Open(destination)
+	if err != nil {
+		t.Fatalf("restored database cannot open: %v", err)
+	}
+	defer restored.Close()
+	libraries, err := restored.ListLibraries(ctx)
+	if err != nil || len(libraries) != 1 || libraries[0].ID != library.ID {
+		t.Fatalf("restored library mismatch: %v %+v", err, libraries)
+	}
+	if _, err := store.RestoreBackupTo(ctx, backupPath, destination); err == nil {
+		t.Fatal("restore must refuse to overwrite an existing destination")
+	}
+}
+
+func TestVerifyBackupRejectsTamperedPayload(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := filepath.Join(store.DataRoot, "backups", "tampered.kahbackup")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := zip.NewWriter(file)
+	payload, err := archive.Create("data/knowledge.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := payload.Write([]byte("tampered")); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := archive.Create("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifest.Write([]byte(`{"format":"kahbackup","version":1,"files":{"knowledge.db":"not-the-real-hash"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.VerifyBackup(context.Background(), "backups/tampered.kahbackup"); err == nil {
+		t.Fatal("expected tampered backup rejection")
+	}
+}
+
 func TestSkillImportLinksAndSearch(t *testing.T) {
 	store, err := Open(t.TempDir())
 	if err != nil {
@@ -273,6 +366,72 @@ func TestKAHUnverifiedHTTPSSourceCannotPublish(t *testing.T) {
 	}
 	if _, err = store.PublishKAHSubmission(ctx, submission.ID); err == nil || err.Error() != "SOURCE_UNVERIFIED" {
 		t.Fatalf("publish error = %v, want SOURCE_UNVERIFIED", err)
+	}
+}
+
+func TestKAHAgentApprovalRequiresConfidenceAboveThreshold(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	library, err := store.CreateLibrary(ctx, "KAH Agent confidence", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := model.KnowledgePayload{
+		Schema: KAHKnowledgeSchema, Type: "claim", Title: "Agent 信度门槛", Description: "验证 Agent 审批必须超过 95%。", Language: "zh-CN",
+		Sections: []model.KnowledgeSection{{ID: "claim", Heading: "主张", Content: "只有充分证据支持的候选才能由 Agent 直接批准。"}},
+	}
+	low, _, err := store.CreateKnowledgeDraft(ctx, KnowledgeDraftInput{LibraryID: library.ID, ClientSubmissionID: "agent-confidence-low", Mode: "create", Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.ReviewKAHSubmissionWithType(ctx, low.ID, "agent", "agent-reviewer", "approve", "恰好 95% 仍需人工审核。", KAHAgentApprovalConfidenceThreshold); err == nil {
+		t.Fatal("Agent approval at the threshold should be rejected")
+	}
+	pending, err := store.GetKAHSubmission(ctx, low.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.ReviewStatus != "pending_review" || len(pending.Reviews) != 0 {
+		t.Fatalf("low-confidence Agent attempt changed the submission: %+v", pending)
+	}
+
+	modelPayload := payload
+	modelPayload.Title = "模型信度门槛"
+	modelSubmission, _, err := store.CreateKnowledgeDraft(ctx, KnowledgeDraftInput{LibraryID: library.ID, ClientSubmissionID: "model-confidence-low", Mode: "create", Payload: modelPayload, RequireSources: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := store.RecordKAHSubmissionReviewWithConfidence(ctx, modelSubmission.ID, "review-model", "approve", "", KAHAgentApprovalConfidenceThreshold)
+	if err != nil || !changed {
+		t.Fatalf("low-confidence automatic review was not recorded safely: changed=%t err=%v", changed, err)
+	}
+	modelResult, err := store.GetKAHSubmission(ctx, modelSubmission.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if modelResult.ReviewStatus != "pending_review" || len(modelResult.Reviews) != 1 || modelResult.Reviews[0].Decision != "needs_human" {
+		t.Fatalf("automatic review bypassed the confidence gate: %+v", modelResult)
+	}
+	if _, err = store.ReviewKAHSubmissionWithType(ctx, modelSubmission.ID, "agent", "agent-reviewer", "approve", "不能绕过自动审核的人工转交。", KAHAgentApprovalConfidenceThreshold+0.01); err == nil {
+		t.Fatal("Agent approval should not bypass an existing needs_human review")
+	}
+
+	highPayload := payload
+	highPayload.Title = "Agent 高信度门槛"
+	high, _, err := store.CreateKnowledgeDraft(ctx, KnowledgeDraftInput{LibraryID: library.ID, ClientSubmissionID: "agent-confidence-high", Mode: "create", Payload: highPayload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.ReviewKAHSubmissionWithType(ctx, high.ID, "agent", "agent-reviewer", "approve", "证据一致且比较完成。", KAHAgentApprovalConfidenceThreshold+0.001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.ReviewStatus != "approved_pending_index" {
+		t.Fatalf("high-confidence Agent approval did not enter publication state: %+v", approved)
 	}
 }
 

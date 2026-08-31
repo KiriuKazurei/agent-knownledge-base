@@ -14,7 +14,7 @@ export interface SkillFile { path: string; size: number; sha256: string; mediaTy
 export interface SkillManifest { skill: Skill; root: string; entryPoint: SkillFile; files: SkillFile[] }
 export interface Provider { id: string; name: string; kind: 'openai'|'anthropic'|'lmstudio'|'custom'; baseUrl: string; model: string; embeddingModel: string; local: boolean; apiKey?: string }
 export interface AgentToken { id: string; name: string; scopes: ('mcp_read'|'mcp_manage')[]; libraryIds: string[]; secret?: string; createdAt: string; revokedAt?: string }
-export interface KAHReviewRecord { id: string; submissionId: string; reviewerType: 'model'|'human'; reviewer: string; decision: 'approve'|'reject'|'needs_human'; reason: string; createdAt: string }
+export interface KAHReviewRecord { id: string; submissionId: string; reviewerType: 'model'|'agent'|'human'; reviewer: string; decision: 'approve'|'reject'|'needs_human'; confidence?: number; reason: string; createdAt: string }
 export interface KAHSubmission { id: string; libraryId: string; knowledgeUri: string; revision: number; mode: 'create'|'propose_revision'; reviewStatus: 'pending_review'|'reviewing'|'approved_pending_index'|'rejected'|'published'; validation: Record<string, unknown>; title: string; summary: string; tags: string[]; provenance: Record<string, unknown>; clientSubmissionId: string; submittedByTokenId?: string; markdown?: string; reviews?: KAHReviewRecord[]; createdAt: string; updatedAt: string }
 export interface SavedSearch { id: string; name: string; query: string; libraryIds: string[]; tags: string[] }
 export interface VirtualFolder { id: string; libraryId: string; name: string; parentId?: string }

@@ -68,7 +68,10 @@ func Start(ctx context.Context, command string, args []string, workingDirectory,
 	go client.read(stdout)
 	go client.drainErrors(stderr)
 	go client.wait()
-	healthCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// A PyInstaller one-file worker must extract its bundled Python, LanceDB,
+	// and document parser dependencies on the first launch. On clean Windows
+	// machines this can exceed ten seconds even though the process is healthy.
+	healthCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	var result map[string]any
 	if err := client.Call(healthCtx, "health", map[string]any{}, &result); err != nil {

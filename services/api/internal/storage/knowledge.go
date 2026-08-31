@@ -22,6 +22,11 @@ import (
 
 const KAHKnowledgeSchema = "kah-knowledge/v1"
 
+// KAHAgentApprovalConfidenceThreshold is deliberately strict: an Agent may
+// only approve and publish a submission when its evidence-backed confidence
+// is greater than 95 percent. Lower-confidence reviews remain human-gated.
+const KAHAgentApprovalConfidenceThreshold = 0.95
+
 var (
 	ErrKnowledgeNotFound = errors.New("knowledge not found")
 	ErrRevisionNotFound  = errors.New("knowledge revision not found")
@@ -864,7 +869,7 @@ func (s *Store) GetKAHSubmission(ctx context.Context, id string) (model.KAHSubmi
 	item.Markdown = revision.Markdown
 	item.Provenance = map[string]any{"generated": revision.Payload.Generated, "sources": revision.Payload.Sources, "flags": revision.Flags}
 	item.Reviews = []model.KAHReviewRecord{}
-	reviews, reviewsErr := s.DB.QueryContext(ctx, `SELECT id,submission_id,reviewer_type,reviewer,decision,reason,created_at FROM kah_reviews WHERE submission_id=? ORDER BY created_at`, item.ID)
+	reviews, reviewsErr := s.DB.QueryContext(ctx, `SELECT id,submission_id,reviewer_type,reviewer,decision,confidence,reason,created_at FROM kah_reviews WHERE submission_id=? ORDER BY created_at`, item.ID)
 	if reviewsErr != nil {
 		return item, reviewsErr
 	}
@@ -872,7 +877,7 @@ func (s *Store) GetKAHSubmission(ctx context.Context, id string) (model.KAHSubmi
 	for reviews.Next() {
 		var review model.KAHReviewRecord
 		var createdAt string
-		if err := reviews.Scan(&review.ID, &review.SubmissionID, &review.ReviewerType, &review.Reviewer, &review.Decision, &review.Reason, &createdAt); err != nil {
+		if err := reviews.Scan(&review.ID, &review.SubmissionID, &review.ReviewerType, &review.Reviewer, &review.Decision, &review.Confidence, &review.Reason, &createdAt); err != nil {
 			return item, err
 		}
 		review.CreatedAt = parseTime(createdAt)
@@ -924,11 +929,34 @@ func (s *Store) ListKAHSubmissions(ctx context.Context, libraryID string) ([]mod
 }
 
 func (s *Store) ReviewKAHSubmission(ctx context.Context, id, reviewer, decision, reason string) (model.KAHSubmission, error) {
-	if decision != "approve" && decision != "reject" {
-		return model.KAHSubmission{}, errors.New("decision must be approve or reject")
+	return s.ReviewKAHSubmissionWithType(ctx, id, "human", reviewer, decision, reason, 0)
+}
+
+// ReviewKAHSubmissionWithType records a review from a named management actor.
+// It is shared by the desktop reviewer and the Agent MCP reviewer so that
+// every decision uses the same atomic KAH state transition and audit trail.
+func (s *Store) ReviewKAHSubmissionWithType(ctx context.Context, id, reviewerType, reviewer, decision, reason string, confidence float64) (model.KAHSubmission, error) {
+	reviewerType = strings.TrimSpace(reviewerType)
+	reviewer = strings.TrimSpace(reviewer)
+	decision = strings.TrimSpace(decision)
+	reason = strings.TrimSpace(reason)
+	if reviewerType != "human" && reviewerType != "agent" {
+		return model.KAHSubmission{}, errors.New("reviewer type must be human or agent")
 	}
-	if decision == "reject" && strings.TrimSpace(reason) == "" {
-		return model.KAHSubmission{}, errors.New("rejection reason is required")
+	if reviewer == "" {
+		return model.KAHSubmission{}, errors.New("reviewer is required")
+	}
+	if decision != "approve" && decision != "reject" && decision != "needs_human" {
+		return model.KAHSubmission{}, errors.New("decision must be approve, reject, or needs_human")
+	}
+	if confidence < 0 || confidence > 1 {
+		return model.KAHSubmission{}, errors.New("confidence must be between 0 and 1")
+	}
+	if reviewerType == "agent" && decision == "approve" && confidence <= KAHAgentApprovalConfidenceThreshold {
+		return model.KAHSubmission{}, errors.New("agent approval requires confidence greater than 0.95")
+	}
+	if (decision == "reject" || decision == "needs_human") && reason == "" {
+		return model.KAHSubmission{}, errors.New("review reason is required")
 	}
 	item, err := s.GetKAHSubmission(ctx, id)
 	if err != nil {
@@ -937,17 +965,29 @@ func (s *Store) ReviewKAHSubmission(ctx context.Context, id, reviewer, decision,
 	if item.ReviewStatus != "pending_review" {
 		return item, errors.New("submission is no longer pending review")
 	}
+	if reviewerType == "agent" && decision == "approve" {
+		var deferred int
+		if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(1) FROM kah_reviews WHERE submission_id=? AND decision='needs_human'`, id).Scan(&deferred); err != nil {
+			return item, err
+		}
+		if deferred > 0 {
+			return item, errors.New("agent approval requires a new submission with additional evidence after a human-review deferral")
+		}
+	}
 	_, stamp := now()
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return item, err
 	}
 	defer tx.Rollback()
-	status := "rejected"
+	status := "pending_review"
 	revisionStatus := "draft"
-	if decision == "approve" {
+	switch decision {
+	case "approve":
 		status = "approved_pending_index"
 		revisionStatus = "approved_pending_index"
+	case "reject":
+		status = "rejected"
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE kah_submissions SET review_status=?,updated_at=? WHERE id=? AND review_status='pending_review'`, status, stamp, id)
 	if err != nil {
@@ -958,11 +998,14 @@ func (s *Store) ReviewKAHSubmission(ctx context.Context, id, reviewer, decision,
 	} else if affected != 1 {
 		return item, errors.New("submission is no longer pending review")
 	}
-	knowledgeID, _, _, _ := ParseKnowledgeURI(item.KnowledgeURI)
+	knowledgeID, _, _, parseErr := ParseKnowledgeURI(item.KnowledgeURI)
+	if parseErr != nil {
+		return item, parseErr
+	}
 	if _, err = tx.ExecContext(ctx, `UPDATE knowledge_revisions SET status=? WHERE knowledge_id=? AND revision=?`, revisionStatus, knowledgeID, item.Revision); err != nil {
 		return item, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO kah_reviews(id,submission_id,reviewer_type,reviewer,decision,reason,created_at) VALUES(?,?, 'human',?,?,?,?)`, uuid.NewString(), id, reviewer, decision, strings.TrimSpace(reason), stamp); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO kah_reviews(id,submission_id,reviewer_type,reviewer,decision,confidence,reason,created_at) VALUES(?,?,?,?,?,?,?,?)`, uuid.NewString(), id, reviewerType, reviewer, decision, confidence, reason, stamp); err != nil {
 		return item, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -997,8 +1040,21 @@ func (s *Store) ResetKAHSubmissionReview(ctx context.Context, id string) error {
 // the immutable revision to the corresponding workflow state. A model may
 // approve, reject, or defer to a human; it can never publish directly.
 func (s *Store) RecordKAHSubmissionReview(ctx context.Context, id, reviewer, decision, reason string) (bool, error) {
+	return s.RecordKAHSubmissionReviewWithConfidence(ctx, id, reviewer, decision, reason, 0)
+}
+
+func (s *Store) RecordKAHSubmissionReviewWithConfidence(ctx context.Context, id, reviewer, decision, reason string, confidence float64) (bool, error) {
 	if decision != "approve" && decision != "reject" && decision != "needs_human" {
 		return false, errors.New("invalid KAH review decision")
+	}
+	if confidence < 0 || confidence > 1 {
+		return false, errors.New("confidence must be between 0 and 1")
+	}
+	if decision == "approve" && confidence <= KAHAgentApprovalConfidenceThreshold {
+		decision = "needs_human"
+		if strings.TrimSpace(reason) == "" {
+			reason = "Automatic reviewer confidence must exceed 95 percent; human review is required."
+		}
 	}
 	item, err := s.GetKAHSubmission(ctx, id)
 	if err != nil {
@@ -1039,7 +1095,7 @@ func (s *Store) RecordKAHSubmissionReview(ctx context.Context, id, reviewer, dec
 	if _, err = tx.ExecContext(ctx, `UPDATE knowledge_revisions SET status=? WHERE knowledge_id=? AND revision=?`, revisionStatus, knowledgeID, item.Revision); err != nil {
 		return false, err
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO kah_reviews(id,submission_id,reviewer_type,reviewer,decision,reason,created_at) VALUES(?,?, 'model',?,?,?,?)`, uuid.NewString(), id, reviewer, decision, strings.TrimSpace(reason), stamp); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO kah_reviews(id,submission_id,reviewer_type,reviewer,decision,confidence,reason,created_at) VALUES(?,?,?,?,?,?,?,?)`, uuid.NewString(), id, "model", reviewer, decision, confidence, strings.TrimSpace(reason), stamp); err != nil {
 		return false, err
 	}
 	if err = tx.Commit(); err != nil {

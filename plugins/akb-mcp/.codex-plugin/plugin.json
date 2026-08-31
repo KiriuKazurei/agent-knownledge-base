@@ -1,6 +1,6 @@
 {
   "name": "akb-mcp",
-  "version": "0.1.0+codex.20260830112640",
+  "version": "0.1.0+codex.20260830140435",
   "description": "Connect Codex to the local Agent Knowledge Base MCP read and manage endpoints.",
   "author": {
     "name": "KiriuKazurei"
@@ -17,8 +17,8 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Agent Knowledge Base MCP",
-    "shortDescription": "Read and submit knowledge through the local AKB service.",
-    "longDescription": "Connect Codex to Agent Knowledge Base for scoped knowledge search, resource reading, validation, and review-gated knowledge submissions.",
+    "shortDescription": "Search, compare, and confidence-review knowledge through local AKB.",
+    "longDescription": "Connect Codex to Agent Knowledge Base for scoped knowledge search, source reading, candidate comparison, validation, submission, and confidence-gated Agent review.",
     "developerName": "KiriuKazurei",
     "category": "Developer Tools",
     "capabilities": [
@@ -28,7 +28,8 @@
     "defaultPrompt": [
       "Search Agent Knowledge Base for relevant project knowledge.",
       "Read an Agent Knowledge Base resource and summarize its evidence.",
-      "Validate and submit a knowledge draft for human review."
+      "Compare and review a knowledge submission with the Agent confidence gate.",
+      "Validate and submit a knowledge draft when supplementary evidence is needed."
     ]
   }
 }

@@ -11,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -191,8 +193,11 @@ func mcpTools(mode string) []gin.H {
 		}}
 		tools = append(tools,
 			gin.H{"name": "knowledge_validate", "description": "Validate a KAH v1 candidate before submitting it.", "inputSchema": gin.H{"type": "object", "required": []string{"libraryId", "candidate"}, "properties": gin.H{"libraryId": gin.H{"type": "string"}, "candidate": candidate}}, "annotations": gin.H{"readOnlyHint": true}},
-			gin.H{"name": "knowledge_submit", "description": "Create a review-only draft or propose an immutable revision. Never publishes or deletes knowledge.", "inputSchema": gin.H{"type": "object", "required": []string{"libraryId", "mode", "candidate", "idempotencyKey"}, "properties": gin.H{"libraryId": gin.H{"type": "string"}, "mode": gin.H{"enum": []string{"create", "propose_revision"}}, "baseUri": gin.H{"type": "string"}, "candidate": candidate, "idempotencyKey": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
-			gin.H{"name": "knowledge_submission_get", "description": "Read validation and human review status for a submitted draft.", "inputSchema": gin.H{"type": "object", "required": []string{"submissionId"}, "properties": gin.H{"submissionId": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": true}},
+			gin.H{"name": "knowledge_submit", "description": "Create a review-gated draft or propose an immutable revision. It does not approve or publish knowledge.", "inputSchema": gin.H{"type": "object", "required": []string{"libraryId", "mode", "candidate", "idempotencyKey"}, "properties": gin.H{"libraryId": gin.H{"type": "string"}, "mode": gin.H{"enum": []string{"create", "propose_revision"}}, "baseUri": gin.H{"type": "string"}, "candidate": candidate, "idempotencyKey": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true}},
+			gin.H{"name": "knowledge_submission_list", "description": "List knowledge submissions in the token-scoped libraries so an Agent can manage the review queue.", "inputSchema": gin.H{"type": "object", "properties": gin.H{"libraryIds": gin.H{"type": "array", "items": gin.H{"type": "string"}}, "statuses": gin.H{"type": "array", "items": gin.H{"type": "string", "enum": []string{"pending_review", "reviewing", "approved_pending_index", "published", "rejected"}}}, "limit": gin.H{"type": "integer", "minimum": 1, "maximum": 100}}}, "annotations": gin.H{"readOnlyHint": true}},
+			gin.H{"name": "knowledge_submission_get", "description": "Read the candidate, provenance, validation, review history, and publication status of a submission.", "inputSchema": gin.H{"type": "object", "required": []string{"submissionId"}, "properties": gin.H{"submissionId": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": true}},
+			gin.H{"name": "knowledge_compare", "description": "Compare a submitted candidate with a stable revision, another submission, or its previous revision.", "inputSchema": gin.H{"type": "object", "required": []string{"submissionId"}, "properties": gin.H{"submissionId": gin.H{"type": "string"}, "baseUri": gin.H{"type": "string", "description": "Optional KAH URI to use as the comparison baseline."}, "baseSubmissionId": gin.H{"type": "string", "description": "Optional submission to use as the comparison baseline."}}}, "annotations": gin.H{"readOnlyHint": true}},
+			gin.H{"name": "knowledge_review", "description": "Record an Agent review. Approval is published only when confidence is strictly greater than 0.95; lower confidence remains pending human review.", "inputSchema": gin.H{"type": "object", "required": []string{"submissionId", "decision", "confidence"}, "properties": gin.H{"submissionId": gin.H{"type": "string"}, "decision": gin.H{"type": "string", "enum": []string{"approve", "reject", "needs_human"}}, "confidence": gin.H{"type": "number", "minimum": 0, "maximum": 1, "description": "Evidence-backed confidence in the 0..1 range. Agent approval requires > 0.95."}, "reason": gin.H{"type": "string"}}}, "annotations": gin.H{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false}},
 		)
 	}
 	return tools
@@ -205,6 +210,25 @@ type mcpKnowledgeToolInput struct {
 	CandidateRaw   json.RawMessage        `json:"candidate"`
 	IdempotencyKey string                 `json:"idempotencyKey"`
 	Candidate      model.KnowledgePayload `json:"-"`
+}
+
+type mcpSubmissionListInput struct {
+	LibraryIDs []string `json:"libraryIds"`
+	Statuses   []string `json:"statuses"`
+	Limit      int      `json:"limit"`
+}
+
+type mcpSubmissionCompareInput struct {
+	SubmissionID     string `json:"submissionId"`
+	BaseURI          string `json:"baseUri"`
+	BaseSubmissionID string `json:"baseSubmissionId"`
+}
+
+type mcpSubmissionReviewInput struct {
+	SubmissionID string   `json:"submissionId"`
+	Decision     string   `json:"decision"`
+	Confidence   *float64 `json:"confidence"`
+	Reason       string   `json:"reason"`
 }
 
 func decodeMCPKnowledgeToolInput(raw json.RawMessage) (mcpKnowledgeToolInput, error) {
@@ -447,6 +471,64 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 			message = "Idempotent replay; the existing draft was returned."
 		}
 		return gin.H{"content": []gin.H{{"type": "text", "text": message}}, "structuredContent": submission}
+	case "knowledge_submission_list":
+		if mode != "manage" {
+			return fail("FORBIDDEN_SCOPE", "manage access is required")
+		}
+		var input mcpSubmissionListInput
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return fail("SCHEMA_INVALID", "invalid submission list arguments")
+		}
+		libraries, err := s.allowedMCPLibraries(c, input.LibraryIDs)
+		if err != nil {
+			return fail("FORBIDDEN_SCOPE", "requested library is outside token scope")
+		}
+		statusFilter := map[string]bool{}
+		for _, status := range input.Statuses {
+			status = strings.TrimSpace(status)
+			if status != "pending_review" && status != "reviewing" && status != "approved_pending_index" && status != "published" && status != "rejected" {
+				return fail("SCHEMA_INVALID", "unsupported submission status: "+status)
+			}
+			statusFilter[status] = true
+		}
+		limit := input.Limit
+		if limit == 0 {
+			limit = 50
+		}
+		if limit < 1 || limit > 100 {
+			return fail("SCHEMA_INVALID", "limit must be between 1 and 100")
+		}
+		all := []model.KAHSubmissionDirectoryEntry{}
+		appendLibrary := func(libraryID string) error {
+			items, listErr := s.Store.ListKAHSubmissions(ctx, libraryID)
+			if listErr != nil {
+				return listErr
+			}
+			for _, item := range items {
+				if len(statusFilter) > 0 && !statusFilter[item.ReviewStatus] {
+					continue
+				}
+				all = append(all, kahSubmissionDirectoryEntry(item))
+			}
+			return nil
+		}
+		if len(libraries) == 0 {
+			if err := appendLibrary(""); err != nil {
+				return fail("DATABASE_ERROR", err.Error())
+			}
+		} else {
+			for _, libraryID := range libraries {
+				if err := appendLibrary(libraryID); err != nil {
+					return fail("DATABASE_ERROR", err.Error())
+				}
+			}
+		}
+		sort.SliceStable(all, func(i, j int) bool { return all[i].UpdatedAt.After(all[j].UpdatedAt) })
+		if len(all) > limit {
+			all = all[:limit]
+		}
+		result := model.KAHSubmissionListResponse{Submissions: all}
+		return gin.H{"content": []gin.H{{"type": "text", "text": fmt.Sprintf("%d knowledge submissions returned.", len(all))}}, "structuredContent": result}
 	case "knowledge_submission_get":
 		if mode != "manage" {
 			return fail("FORBIDDEN_SCOPE", "manage access is required")
@@ -465,6 +547,155 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 			return fail("FORBIDDEN_SCOPE", "submission is outside token scope")
 		}
 		return gin.H{"content": []gin.H{{"type": "text", "text": "Submission status: " + item.ReviewStatus}}, "structuredContent": item}
+	case "knowledge_compare":
+		if mode != "manage" {
+			return fail("FORBIDDEN_SCOPE", "manage access is required")
+		}
+		var input mcpSubmissionCompareInput
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return fail("SCHEMA_INVALID", "submissionId is required")
+		}
+		input.SubmissionID = strings.TrimSpace(input.SubmissionID)
+		input.BaseURI = strings.TrimSpace(input.BaseURI)
+		input.BaseSubmissionID = strings.TrimSpace(input.BaseSubmissionID)
+		if input.SubmissionID == "" {
+			return fail("SCHEMA_INVALID", "submissionId is required")
+		}
+		if input.BaseURI != "" && input.BaseSubmissionID != "" {
+			return fail("SCHEMA_INVALID", "baseUri and baseSubmissionId are mutually exclusive")
+		}
+		submission, err := s.Store.GetKAHSubmission(ctx, input.SubmissionID)
+		if err != nil {
+			return fail("KNOWLEDGE_NOT_FOUND", err.Error())
+		}
+		if _, err := s.allowedMCPLibraries(c, []string{submission.LibraryID}); err != nil {
+			return fail("FORBIDDEN_SCOPE", "submission is outside token scope")
+		}
+		candidate, err := s.Store.GetKnowledge(ctx, submission.KnowledgeURI+"?revision="+fmt.Sprint(submission.Revision), true)
+		if err != nil {
+			return fail("KNOWLEDGE_NOT_FOUND", err.Error())
+		}
+		var base *model.KnowledgeRevision
+		if input.BaseSubmissionID != "" {
+			if input.BaseSubmissionID == submission.ID {
+				return fail("SCHEMA_INVALID", "baseSubmissionId must differ from submissionId")
+			}
+			baseSubmission, baseErr := s.Store.GetKAHSubmission(ctx, input.BaseSubmissionID)
+			if baseErr != nil {
+				return fail("KNOWLEDGE_NOT_FOUND", baseErr.Error())
+			}
+			if baseSubmission.LibraryID != submission.LibraryID {
+				return fail("FORBIDDEN_SCOPE", "comparison baseline is outside the submission library")
+			}
+			baseRevision, baseErr := s.Store.GetKnowledge(ctx, baseSubmission.KnowledgeURI+"?revision="+fmt.Sprint(baseSubmission.Revision), true)
+			if baseErr != nil {
+				return fail("KNOWLEDGE_NOT_FOUND", baseErr.Error())
+			}
+			base = &baseRevision
+		} else if input.BaseURI != "" {
+			baseRevision, baseErr := s.Store.GetKnowledge(ctx, input.BaseURI, true)
+			if baseErr != nil {
+				return fail("KNOWLEDGE_NOT_FOUND", baseErr.Error())
+			}
+			if _, baseErr = s.allowedMCPLibraries(c, []string{baseRevision.LibraryID}); baseErr != nil || baseRevision.LibraryID != submission.LibraryID {
+				return fail("FORBIDDEN_SCOPE", "comparison baseline is outside the submission library")
+			}
+			base = &baseRevision
+		} else if submission.Revision > 1 {
+			previous, previousErr := s.Store.GetKnowledge(ctx, submission.KnowledgeURI+"?revision="+fmt.Sprint(submission.Revision-1), true)
+			if previousErr == nil {
+				base = &previous
+			}
+		}
+		comparison := compareKAHKnowledge(submission.ID, candidate, base)
+		return gin.H{"content": []gin.H{{"type": "text", "text": comparisonMessage(comparison)}}, "structuredContent": comparison}
+	case "knowledge_review":
+		if mode != "manage" {
+			return fail("FORBIDDEN_SCOPE", "manage access is required")
+		}
+		var input mcpSubmissionReviewInput
+		if err := json.Unmarshal(raw, &input); err != nil {
+			return fail("SCHEMA_INVALID", "submissionId, decision, and confidence are required")
+		}
+		input.SubmissionID = strings.TrimSpace(input.SubmissionID)
+		input.Decision = strings.TrimSpace(input.Decision)
+		input.Reason = strings.TrimSpace(input.Reason)
+		if input.SubmissionID == "" || input.Decision == "" || input.Confidence == nil {
+			return fail("SCHEMA_INVALID", "submissionId, decision, and confidence are required")
+		}
+		confidence := *input.Confidence
+		if confidence < 0 || confidence > 1 {
+			return fail("SCHEMA_INVALID", "confidence must be between 0 and 1")
+		}
+		if input.Decision != "approve" && input.Decision != "reject" && input.Decision != "needs_human" {
+			return fail("SCHEMA_INVALID", "decision must be approve, reject, or needs_human")
+		}
+		submission, err := s.Store.GetKAHSubmission(ctx, input.SubmissionID)
+		if err != nil {
+			return fail("KNOWLEDGE_NOT_FOUND", err.Error())
+		}
+		if _, err := s.allowedMCPLibraries(c, []string{submission.LibraryID}); err != nil {
+			return fail("FORBIDDEN_SCOPE", "submission is outside token scope")
+		}
+		revision, err := s.Store.GetKnowledge(ctx, submission.KnowledgeURI+"?revision="+fmt.Sprint(submission.Revision), true)
+		if err != nil {
+			return fail("KNOWLEDGE_NOT_FOUND", err.Error())
+		}
+		effectiveDecision := input.Decision
+		reason := input.Reason
+		if effectiveDecision == "approve" && confidence <= storage.KAHAgentApprovalConfidenceThreshold {
+			effectiveDecision = "needs_human"
+			if reason == "" {
+				reason = fmt.Sprintf("Agent confidence %.2f does not exceed the %.2f approval threshold.", confidence, storage.KAHAgentApprovalConfidenceThreshold)
+			}
+		}
+		if effectiveDecision == "approve" && !submission.Validation.Valid {
+			effectiveDecision = "needs_human"
+			if reason == "" {
+				reason = "Submission validation is not valid; human review is required."
+			}
+		}
+		if effectiveDecision == "approve" && contains(revision.Flags, "source-unverified") {
+			effectiveDecision = "needs_human"
+			if reason == "" {
+				reason = "One or more sources are unverified; human review is required."
+			}
+		}
+		if (effectiveDecision == "reject" || effectiveDecision == "needs_human") && reason == "" {
+			return fail("SCHEMA_INVALID", "reason is required for reject or needs_human")
+		}
+		reviewed, err := s.Store.ReviewKAHSubmissionWithType(ctx, submission.ID, "agent", actorName(c), effectiveDecision, reason, confidence)
+		if err != nil {
+			return fail("REVIEW_FAILED", err.Error())
+		}
+		result := model.KAHAgentReviewResult{
+			Submission:          reviewed,
+			RequestedDecision:   input.Decision,
+			Decision:            effectiveDecision,
+			ReviewerType:        "agent",
+			Confidence:          confidence,
+			ConfidenceThreshold: storage.KAHAgentApprovalConfidenceThreshold,
+			ApprovalEligible:    effectiveDecision == "approve",
+			RequiresHumanReview: effectiveDecision == "needs_human",
+		}
+		_ = s.Store.AddAudit(ctx, actorName(c), "kah_mcp_review_recorded", reviewed.KnowledgeURI, map[string]any{
+			"submissionId": reviewed.ID, "requestedDecision": input.Decision, "decision": effectiveDecision,
+			"confidence": confidence, "confidenceThreshold": storage.KAHAgentApprovalConfidenceThreshold,
+		})
+		message := "Agent review recorded: " + effectiveDecision + "."
+		if effectiveDecision == "approve" {
+			published, publishErr := s.Store.PublishKAHSubmission(ctx, reviewed.ID)
+			if publishErr != nil {
+				result.Submission = reviewed
+				return gin.H{"content": []gin.H{{"type": "text", "text": "PUBLISH_FAILED: " + publishErr.Error()}}, "isError": true, "structuredContent": result}
+			}
+			result.Published = true
+			result.PublishedKnowledge = &published
+			result.Submission, _ = s.Store.GetKAHSubmission(ctx, reviewed.ID)
+			_ = s.Store.AddAudit(ctx, actorName(c), "kah_mcp_knowledge_published", published.URI, map[string]any{"revision": published.Revision, "submissionId": reviewed.ID})
+			message = "Agent review approved and published the knowledge because confidence exceeded the threshold."
+		}
+		return gin.H{"content": []gin.H{{"type": "text", "text": message}}, "structuredContent": result}
 	default:
 		return fail("METHOD_NOT_FOUND", "unknown or unavailable tool")
 	}
@@ -723,7 +954,205 @@ func mcpDraftVisible(c *gin.Context, item model.KnowledgeRevision) bool {
 	}
 	value, _ := c.Get("identity")
 	id, _ := value.(identity)
-	return id.Desktop || (item.SubmittedBy != "" && item.SubmittedBy == id.Token.ID)
+	return id.Desktop || contains(id.Token.Scopes, "mcp_manage")
+}
+
+func kahSubmissionDirectoryEntry(item model.KAHSubmission) model.KAHSubmissionDirectoryEntry {
+	tags := item.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return model.KAHSubmissionDirectoryEntry{
+		ID: item.ID, LibraryID: item.LibraryID, KnowledgeURI: item.KnowledgeURI, Revision: item.Revision,
+		Mode: item.Mode, ReviewStatus: item.ReviewStatus, Title: item.Title, Summary: item.Summary,
+		Tags: tags, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+	}
+}
+
+func compareKAHKnowledge(submissionID string, candidate model.KnowledgeRevision, base *model.KnowledgeRevision) model.KAHKnowledgeComparison {
+	comparison := model.KAHKnowledgeComparison{
+		SubmissionID:    submissionID,
+		Candidate:       comparisonRevision(candidate),
+		HasBase:         base != nil,
+		MetadataChanges: []model.KAHFieldChange{},
+		SectionChanges:  []model.KAHSectionChange{},
+		SourceChanges:   []model.KAHSourceChange{},
+		RelationChanges: []model.KAHRelationChange{},
+	}
+	if base != nil {
+		baseInfo := comparisonRevision(*base)
+		comparison.Base = &baseInfo
+	}
+	candidateMetadata := comparableKnowledgeMetadata(candidate.Payload)
+	baseMetadata := map[string]any{}
+	if base != nil {
+		baseMetadata = comparableKnowledgeMetadata(base.Payload)
+	}
+	metadataKeys := map[string]bool{}
+	for key := range candidateMetadata {
+		metadataKeys[key] = true
+	}
+	for key := range baseMetadata {
+		metadataKeys[key] = true
+	}
+	sortedMetadataKeys := make([]string, 0, len(metadataKeys))
+	for key := range metadataKeys {
+		sortedMetadataKeys = append(sortedMetadataKeys, key)
+	}
+	sort.Strings(sortedMetadataKeys)
+	for _, key := range sortedMetadataKeys {
+		before, beforeOK := baseMetadata[key]
+		after, afterOK := candidateMetadata[key]
+		if !beforeOK {
+			before = nil
+		}
+		if !afterOK {
+			after = nil
+		}
+		if !reflect.DeepEqual(before, after) {
+			comparison.MetadataChanges = append(comparison.MetadataChanges, model.KAHFieldChange{Field: key, Before: before, After: after})
+		}
+	}
+
+	candidateSections := map[string]model.KnowledgeSection{}
+	for _, section := range candidate.Payload.Sections {
+		candidateSections[section.ID] = section
+	}
+	baseSections := map[string]model.KnowledgeSection{}
+	if base != nil {
+		for _, section := range base.Payload.Sections {
+			baseSections[section.ID] = section
+		}
+	}
+	sectionIDs := sortedUnionKeys(candidateSections, baseSections)
+	for _, id := range sectionIDs {
+		before, beforeOK := baseSections[id]
+		after, afterOK := candidateSections[id]
+		switch {
+		case !beforeOK:
+			value := after
+			comparison.SectionChanges = append(comparison.SectionChanges, model.KAHSectionChange{ID: id, Change: "added", After: &value})
+			comparison.Summary.SectionAdds++
+		case !afterOK:
+			value := before
+			comparison.SectionChanges = append(comparison.SectionChanges, model.KAHSectionChange{ID: id, Change: "removed", Before: &value})
+			comparison.Summary.SectionRemoves++
+		case !reflect.DeepEqual(before, after):
+			beforeValue, afterValue := before, after
+			comparison.SectionChanges = append(comparison.SectionChanges, model.KAHSectionChange{ID: id, Change: "modified", Before: &beforeValue, After: &afterValue})
+			comparison.Summary.SectionChanges++
+		}
+	}
+
+	candidateSources := map[string]model.KnowledgeSource{}
+	for _, source := range candidate.Payload.Sources {
+		candidateSources[source.ID] = source
+	}
+	baseSources := map[string]model.KnowledgeSource{}
+	if base != nil {
+		for _, source := range base.Payload.Sources {
+			baseSources[source.ID] = source
+		}
+	}
+	sourceIDs := sortedUnionKeys(candidateSources, baseSources)
+	for _, id := range sourceIDs {
+		before, beforeOK := baseSources[id]
+		after, afterOK := candidateSources[id]
+		switch {
+		case !beforeOK:
+			value := after
+			comparison.SourceChanges = append(comparison.SourceChanges, model.KAHSourceChange{ID: id, Change: "added", After: &value})
+			comparison.Summary.SourceAdds++
+		case !afterOK:
+			value := before
+			comparison.SourceChanges = append(comparison.SourceChanges, model.KAHSourceChange{ID: id, Change: "removed", Before: &value})
+			comparison.Summary.SourceRemoves++
+		case !reflect.DeepEqual(before, after):
+			beforeValue, afterValue := before, after
+			comparison.SourceChanges = append(comparison.SourceChanges, model.KAHSourceChange{ID: id, Change: "modified", Before: &beforeValue, After: &afterValue})
+			comparison.Summary.SourceChanges++
+		}
+	}
+
+	candidateRelations := map[string]model.KnowledgeRelation{}
+	for _, relation := range candidate.Payload.Relations {
+		candidateRelations[relationComparisonKey(relation)] = relation
+	}
+	baseRelations := map[string]model.KnowledgeRelation{}
+	if base != nil {
+		for _, relation := range base.Payload.Relations {
+			baseRelations[relationComparisonKey(relation)] = relation
+		}
+	}
+	relationKeys := sortedUnionKeys(candidateRelations, baseRelations)
+	for _, key := range relationKeys {
+		before, beforeOK := baseRelations[key]
+		after, afterOK := candidateRelations[key]
+		switch {
+		case !beforeOK:
+			value := after
+			comparison.RelationChanges = append(comparison.RelationChanges, model.KAHRelationChange{Key: key, Change: "added", After: &value})
+			comparison.Summary.RelationAdds++
+		case !afterOK:
+			value := before
+			comparison.RelationChanges = append(comparison.RelationChanges, model.KAHRelationChange{Key: key, Change: "removed", Before: &value})
+			comparison.Summary.RelationRemoves++
+		}
+	}
+	comparison.Summary.MetadataChanges = len(comparison.MetadataChanges)
+	comparison.Changed = comparison.Summary.MetadataChanges > 0 || len(comparison.SectionChanges) > 0 || len(comparison.SourceChanges) > 0 || len(comparison.RelationChanges) > 0
+	return comparison
+}
+
+func comparisonRevision(value model.KnowledgeRevision) model.KAHComparisonRevision {
+	return model.KAHComparisonRevision{URI: value.URI, Revision: value.Revision, Status: value.Status, Title: value.Payload.Title, Description: value.Payload.Description}
+}
+
+func comparableKnowledgeMetadata(payload model.KnowledgePayload) map[string]any {
+	aliases := append([]string{}, payload.Aliases...)
+	primaryPath := append([]string{}, payload.PrimaryPath...)
+	tags := append([]string{}, payload.Tags...)
+	sort.Strings(aliases)
+	sort.Strings(primaryPath)
+	sort.Strings(tags)
+	classifications := map[string][]string{}
+	for key, values := range payload.Classifications {
+		copyValues := append([]string{}, values...)
+		sort.Strings(copyValues)
+		classifications[key] = copyValues
+	}
+	return map[string]any{
+		"type": payload.Type, "subtype": payload.Subtype, "title": payload.Title, "description": payload.Description,
+		"language": payload.Language, "aliases": aliases, "primary_path": primaryPath,
+		"classifications": classifications, "tags": tags, "duplicate_intent": payload.DuplicateIntent,
+	}
+}
+
+func sortedUnionKeys[T any](left, right map[string]T) []string {
+	keys := map[string]bool{}
+	for key := range left {
+		keys[key] = true
+	}
+	for key := range right {
+		keys[key] = true
+	}
+	result := make([]string, 0, len(keys))
+	for key := range keys {
+		result = append(result, key)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func relationComparisonKey(relation model.KnowledgeRelation) string {
+	return fmt.Sprintf("%s|%s|%d", relation.Type, relation.Target, relation.TargetRevision)
+}
+
+func comparisonMessage(value model.KAHKnowledgeComparison) string {
+	if !value.HasBase {
+		return fmt.Sprintf("Submission %s compared without a baseline; %d sections and %d sources are present.", value.SubmissionID, value.Summary.SectionAdds, value.Summary.SourceAdds)
+	}
+	return fmt.Sprintf("Submission %s compared with %s; changed=%t, metadata=%d, sections +%d/-%d/~%d, sources +%d/-%d/~%d, relations +%d/-%d.", value.SubmissionID, value.Base.URI, value.Changed, value.Summary.MetadataChanges, value.Summary.SectionAdds, value.Summary.SectionRemoves, value.Summary.SectionChanges, value.Summary.SourceAdds, value.Summary.SourceRemoves, value.Summary.SourceChanges, value.Summary.RelationAdds, value.Summary.RelationRemoves)
 }
 func derivationSummary(value *model.KnowledgeDerivation) *model.KnowledgeDerivation {
 	if value == nil {
@@ -761,16 +1190,20 @@ Read kah://schema/kah-knowledge/v1 before forming an unsupported assumption abou
 
 const kahManageSkill = `---
 name: kah-knowledge-manage
-description: Validate and submit KAH Knowledge Profile v1 drafts through the Manage MCP server. Use when an Agent needs to add or propose a revision of knowledge; do not use to publish or delete knowledge.
+description: Search, compare, validate, submit, and review KAH Knowledge Profile v1 through the Manage MCP server. Agent approval requires evidence-backed confidence above 95 percent.
 ---
 
 # KAH Knowledge Manage
 
 1. Search first for duplicates and existing revisions.
-2. Gather exact sources, source locators, and body citations. Do not invent citations.
-3. Build a KAH v1 JSON candidate and call knowledge_validate.
-4. Resolve every blocking error. For near duplicates choose revision, supplement, or independent through duplicate_intent and relations.
-5. Call knowledge_submit with a fresh idempotencyKey. The result is a human-review draft, never a publication.
-6. Call knowledge_submission_get to inspect review status.
+2. Call knowledge_submission_list with statuses=["pending_review"] when managing the review queue, then call knowledge_submission_get for a selected submission.
+3. Gather exact sources, source locators, and body citations. Do not invent citations.
+4. Call knowledge_compare before reviewing. It compares metadata, sections, sources, and relations against a selected baseline.
+5. Build a KAH v1 JSON candidate and call knowledge_validate.
+6. Resolve every blocking error. For near duplicates choose revision, supplement, or independent through duplicate_intent and relations.
+7. Call knowledge_submit with a fresh idempotencyKey. The result is a review-gated draft, never an approval.
+8. Call knowledge_review with decision, confidence in the 0..1 range, and a reason. Only confidence strictly greater than 0.95 can approve and publish; 0.95 or lower is recorded as needs_human and remains pending_review.
+9. If more evidence is needed, submit a new immutable revision with supplementary sources before asking for another Agent review. Never retry the same deferred submission with an inflated confidence.
+10. Treat approval as complete only when the response has published=true and submission.reviewStatus=published. Rejection requires a concrete reason.
 
-Read kah://schema/kah-knowledge/v1 for the complete constrained vocabulary.`
+Read kah://schema/kah-knowledge/v1 for the complete constrained vocabulary. Do not call desktop-only HTTP review routes, edit the KAH database, or mutate source documents.`

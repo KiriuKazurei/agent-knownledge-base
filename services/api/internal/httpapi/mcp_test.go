@@ -160,7 +160,7 @@ func TestMCPDocumentSourceValidationPinsCurrentSnapshot(t *testing.T) {
 	}
 }
 
-func TestMCPManageSubmitsDraftAndCannotPublish(t *testing.T) {
+func TestMCPManageSubmitsDraftAndRequiresReview(t *testing.T) {
 	server, handler := testServer(t)
 	created := request(t, handler, http.MethodPost, "/api/v1/libraries", map[string]any{"name": "Manage"}, "desktop-test")
 	var library model.Library
@@ -195,6 +195,130 @@ func TestMCPManageSubmitsDraftAndCannotPublish(t *testing.T) {
 	denied := request(t, handler, http.MethodPost, "/mcp/read", map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "knowledge_submit", "arguments": map[string]any{}}}, token.Secret)
 	if denied.Code != http.StatusForbidden {
 		t.Fatalf("manage token should not access read endpoint: %d %s", denied.Code, denied.Body.String())
+	}
+}
+
+func TestMCPManageListsComparesAndReviewsWithConfidence(t *testing.T) {
+	server, handler := testServer(t)
+	created := request(t, handler, http.MethodPost, "/api/v1/libraries", map[string]any{"name": "Agent review"}, "desktop-test")
+	var library model.Library
+	if err := json.Unmarshal(created.Body.Bytes(), &library); err != nil {
+		t.Fatal(err)
+	}
+	stable := seedStableKnowledge(t, server, library.ID)
+	tokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "reviewer", "scopes": []string{"mcp_manage"}, "libraryIds": []string{library.ID}}, "desktop-test")
+	var token model.AgentToken
+	if err := json.Unmarshal(tokenResponse.Body.Bytes(), &token); err != nil {
+		t.Fatal(err)
+	}
+	newCandidate := func(title, content string) map[string]any {
+		return map[string]any{
+			"schema": "kah-knowledge/v1", "type": "claim", "title": title, "description": "由 Agent 比较和审核的候选知识。", "language": "zh-CN", "duplicate_intent": "independent",
+			"sections": []map[string]any{{"id": "claim", "heading": "主张", "content": content + "[^seed]"}},
+			"sources":  []map[string]any{{"id": "seed", "resource": stable.URI + "?revision=1", "title": stable.Payload.Title}},
+		}
+	}
+	lowSubmitted := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submit", "arguments": map[string]any{"libraryId": library.ID, "mode": "create", "candidate": newCandidate("低信度候选", "候选需要额外证据。"), "idempotencyKey": "agent-review-low"}})
+	lowResult := lowSubmitted["result"].(map[string]any)
+	lowSubmission := lowResult["structuredContent"].(map[string]any)
+	lowID := lowSubmission["id"].(string)
+
+	toolsResponse := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/list", map[string]any{})
+	toolsResult := toolsResponse["result"].(map[string]any)
+	toolList := toolsResult["tools"].([]any)
+	requiredTools := map[string]bool{"knowledge_submission_list": false, "knowledge_compare": false, "knowledge_review": false}
+	for _, rawTool := range toolList {
+		tool, ok := rawTool.(map[string]any)
+		if ok {
+			if _, exists := requiredTools[tool["name"].(string)]; exists {
+				requiredTools[tool["name"].(string)] = true
+			}
+		}
+	}
+	for name, found := range requiredTools {
+		if !found {
+			t.Fatalf("manage MCP tool %s was not advertised: %#v", name, toolList)
+		}
+	}
+	manageSkill := callMCP(t, handler, "/mcp/manage", token.Secret, "resources/read", map[string]any{"uri": "kah://skill/manage/v1"})
+	manageSkillResult := manageSkill["result"].(map[string]any)
+	manageSkillContents := manageSkillResult["contents"].([]any)
+	manageSkillText := manageSkillContents[0].(map[string]any)["text"].(string)
+	if !strings.Contains(manageSkillText, "knowledge_review") || !strings.Contains(manageSkillText, "0.95") {
+		t.Fatalf("manage Skill does not explain Agent review confidence: %s", manageSkillText)
+	}
+
+	listed := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submission_list", "arguments": map[string]any{"libraryIds": []string{library.ID}, "statuses": []string{"pending_review"}}})
+	listedResult := listed["result"].(map[string]any)
+	listedContent := listedResult["structuredContent"].(map[string]any)
+	listedSubmissions := listedContent["submissions"].([]any)
+	foundLow := false
+	for _, rawSubmission := range listedSubmissions {
+		item, ok := rawSubmission.(map[string]any)
+		if ok && item["id"] == lowID {
+			foundLow = true
+			break
+		}
+	}
+	if !foundLow {
+		t.Fatalf("pending submission was not listed: %#v", listed)
+	}
+
+	compared := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_compare", "arguments": map[string]any{"submissionId": lowID, "baseUri": stable.URI + "?revision=1"}})
+	comparisonResult := compared["result"].(map[string]any)
+	comparison := comparisonResult["structuredContent"].(map[string]any)
+	if comparison["hasBase"] != true || comparison["changed"] != true {
+		t.Fatalf("comparison did not identify the candidate changes: %#v", compared)
+	}
+	summary := comparison["summary"].(map[string]any)
+	if summary["sectionChanges"] != float64(1) {
+		t.Fatalf("comparison section change summary = %#v", summary)
+	}
+
+	lowConfidence := 0.95
+	lowReview := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_review", "arguments": map[string]any{"submissionId": lowID, "decision": "approve", "confidence": lowConfidence, "reason": "证据不足，等待人工核验。"}})
+	lowReviewResult := lowReview["result"].(map[string]any)
+	lowReviewContent := lowReviewResult["structuredContent"].(map[string]any)
+	if lowReviewContent["decision"] != "needs_human" || lowReviewContent["published"] != false || lowReviewContent["requiresHumanReview"] != true {
+		t.Fatalf("low-confidence approval bypassed the human gate: %#v", lowReview)
+	}
+	lowReviewSubmission := lowReviewContent["submission"].(map[string]any)
+	if lowReviewSubmission["reviewStatus"] != "pending_review" {
+		t.Fatalf("low-confidence submission status = %#v", lowReviewSubmission)
+	}
+	lowDetails := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submission_get", "arguments": map[string]any{"submissionId": lowID}})
+	lowDetailsResult := lowDetails["result"].(map[string]any)
+	lowDetailsSubmission := lowDetailsResult["structuredContent"].(map[string]any)
+	reviews := lowDetailsSubmission["reviews"].([]any)
+	lastReview := reviews[len(reviews)-1].(map[string]any)
+	if lastReview["reviewerType"] != "agent" || lastReview["decision"] != "needs_human" || lastReview["confidence"] != lowConfidence {
+		t.Fatalf("agent review was not persisted with confidence: %#v", lastReview)
+	}
+
+	highConfidence := 0.99
+	retry := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_review", "arguments": map[string]any{"submissionId": lowID, "decision": "approve", "confidence": highConfidence, "reason": "重复审核不应绕过人工门槛。"}})
+	retryResult := retry["result"].(map[string]any)
+	if retryResult["isError"] != true {
+		t.Fatalf("same deferred submission accepted an inflated confidence: %#v", retry)
+	}
+
+	highSubmitted := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_submit", "arguments": map[string]any{"libraryId": library.ID, "mode": "create", "candidate": newCandidate("高信度候选", "该候选由稳定来源直接支持。"), "idempotencyKey": "agent-review-high"}})
+	highResult := highSubmitted["result"].(map[string]any)
+	highSubmission := highResult["structuredContent"].(map[string]any)
+	highID := highSubmission["id"].(string)
+	highReview := callMCP(t, handler, "/mcp/manage", token.Secret, "tools/call", map[string]any{"name": "knowledge_review", "arguments": map[string]any{"submissionId": highID, "decision": "approve", "confidence": highConfidence, "reason": "来源、正文和比较结果均一致。"}})
+	highReviewResult := highReview["result"].(map[string]any)
+	highReviewContent := highReviewResult["structuredContent"].(map[string]any)
+	if highReviewContent["decision"] != "approve" || highReviewContent["published"] != true {
+		t.Fatalf("high-confidence Agent approval did not publish: %#v", highReview)
+	}
+	highReviewSubmission := highReviewContent["submission"].(map[string]any)
+	if highReviewSubmission["reviewStatus"] != "published" {
+		t.Fatalf("high-confidence submission status = %#v", highReviewSubmission)
+	}
+	publishedKnowledge := highReviewContent["publishedKnowledge"].(map[string]any)
+	if publishedKnowledge["status"] != "stable" || publishedKnowledge["stable"] != true {
+		t.Fatalf("high-confidence published knowledge = %#v", publishedKnowledge)
 	}
 }
 

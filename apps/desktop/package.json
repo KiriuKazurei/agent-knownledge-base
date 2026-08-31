@@ -58,8 +58,13 @@
       {"from": "../../services/api/kah-api.exe", "to": "backend/kah-api.exe"},
       {"from": "../../services/worker/dist/kah-worker.exe", "to": "backend/kah-worker.exe"}
     ],
-    "win": {"target": ["nsis", "portable"], "artifactName": "${productName}-${version}-${arch}.${ext}"},
-    "nsis": {"oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true}
+    "win": {"target": ["nsis", "portable"], "signAndEditExecutable": false},
+    "nsis": {
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "portable": {"artifactName": "${productName}-${version}-${arch}-portable.${ext}"}
   }
 }
-

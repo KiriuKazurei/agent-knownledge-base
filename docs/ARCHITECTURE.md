@@ -16,7 +16,7 @@ Installed mode defaults to the Electron `userData` directory. Portable mode is s
 
 Document queries produce auditable evidence before optional generation. Candidate text matches and vector matches are fused with reciprocal-rank fusion. If no embedding provider is configured, the API returns `degraded: true` with a lexical-only reason rather than failing. Every evidence result contains a document, chunk, hash, and format-specific location.
 
-KAH knowledge is a separate structured directory backed by immutable SQLite revisions. `/knowledge/search` and `/knowledge/resolve` are desktop management endpoints; Agents use `POST /mcp/read` for stable directory entries and revision-pinned content. `POST /mcp/manage` validates and submits review-only drafts. Drafts and rejected revisions are never returned by Read MCP.
+KAH knowledge is a separate structured directory backed by immutable SQLite revisions. `/knowledge/search` and `/knowledge/resolve` are desktop management endpoints; Agents use `POST /mcp/read` for stable directory entries and revision-pinned content. `POST /mcp/manage` lists, reads, compares, validates, submits, and confidence-gated reviews within the token's library scope. An Agent approval publishes only when evidence confidence is strictly greater than 0.95 and the source/validation checks pass; otherwise the submission remains pending for human review. Drafts and rejected revisions are never returned by Read MCP.
 
 ## Agent Skills
 

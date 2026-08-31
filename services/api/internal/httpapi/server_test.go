@@ -69,6 +69,28 @@ func TestManagementRequiresDesktop(t *testing.T) {
 	}
 }
 
+func TestCreateBackupHTTPProducesVerifiedArchive(t *testing.T) {
+	server, handler := testServer(t)
+	response := request(t, handler, "POST", "/api/v1/backups", map[string]any{"includeIndexes": true}, "desktop-test")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("backup: %d %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Path   string `json:"path"`
+		SHA256 string `json:"sha256"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	manifest, digest, err := server.Store.VerifyBackup(context.Background(), body.Path)
+	if err != nil {
+		t.Fatalf("backup verification: %v", err)
+	}
+	if digest != body.SHA256 || !manifest.IncludeIndexes {
+		t.Fatalf("unexpected verified backup: digest=%s manifest=%+v", digest, manifest)
+	}
+}
+
 func TestSkillAgentEndpoints(t *testing.T) {
 	t.Skip("superseded: Agent Skill discovery is now provided by MCP resources")
 	server, handler := testServer(t)

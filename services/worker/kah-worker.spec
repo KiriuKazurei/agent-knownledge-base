@@ -11,5 +11,4 @@ a = Analysis(
     noarchive=False,
 )
 pyz = PYZ(a.pure)
-exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="kah-worker", console=False)
-
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="kah-worker", console=True)

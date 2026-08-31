@@ -1,7 +1,10 @@
 import os
+import json
+import subprocess
 import sys
 import tempfile
 import unittest
+import importlib.util
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -13,6 +16,26 @@ from knowledge_worker.server import RpcServer
 
 
 class WorkerTests(unittest.TestCase):
+    def test_script_entrypoint_supports_json_rpc_pipes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["KAH_DATA_ROOT"] = directory
+            environment["PYTHONPATH"] = str(ROOT / "src")
+            request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "health", "params": {}}) + "\n"
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / "src" / "knowledge_worker" / "__main__.py")],
+                input=request,
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            response = json.loads(completed.stdout.strip())
+            self.assertEqual(response["id"], 1)
+            self.assertIn("indexBackend", response["result"])
+
     def test_markdown_parse_preserves_heading_and_stable_chunks(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "note.md"
@@ -101,6 +124,19 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(result["results"][0]["id"], "chunk-apple")
             self.assertGreater(result["results"][0]["vector"], 0)
             self.assertEqual(result["results"][0]["final"], result["results"][0]["vector"])
+
+    @unittest.skipUnless(importlib.util.find_spec("lancedb"), "LanceDB wheel is not installed")
+    def test_lancedb_search_executes_native_queries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            index = HybridIndex(directory)
+            index.upsert("library-1", "document-1", [
+                {"id": "chunk-apple", "text": "苹果和香蕉是水果", "location": {}, "contentHash": "a"},
+                {"id": "chunk-database", "text": "数据库索引支持快速检索", "location": {}, "contentHash": "b"},
+            ])
+            result = index.search("苹果", ["library-1"], 10, "hybrid")
+            self.assertEqual(result["backend"], "lancedb+portable")
+            self.assertEqual(result["searchBackend"], "lancedb")
+            self.assertEqual(result["results"][0]["id"], "chunk-apple")
 
     def test_rpc_unknown_method(self):
         with tempfile.TemporaryDirectory() as directory:

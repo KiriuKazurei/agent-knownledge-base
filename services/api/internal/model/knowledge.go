@@ -166,6 +166,98 @@ type KAHReviewRecord struct {
 	ReviewerType string    `json:"reviewerType"`
 	Reviewer     string    `json:"reviewer"`
 	Decision     string    `json:"decision"`
+	Confidence   float64   `json:"confidence"`
 	Reason       string    `json:"reason"`
 	CreatedAt    time.Time `json:"createdAt"`
+}
+
+type KAHSubmissionDirectoryEntry struct {
+	ID           string    `json:"id"`
+	LibraryID    string    `json:"libraryId"`
+	KnowledgeURI string    `json:"knowledgeUri"`
+	Revision     int       `json:"revision"`
+	Mode         string    `json:"mode"`
+	ReviewStatus string    `json:"reviewStatus"`
+	Title        string    `json:"title"`
+	Summary      string    `json:"summary"`
+	Tags         []string  `json:"tags"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
+type KAHSubmissionListResponse struct {
+	Submissions []KAHSubmissionDirectoryEntry `json:"submissions"`
+}
+
+type KAHComparisonRevision struct {
+	URI         string `json:"uri"`
+	Revision    int    `json:"revision"`
+	Status      string `json:"status"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+type KAHFieldChange struct {
+	Field  string `json:"field"`
+	Before any    `json:"before"`
+	After  any    `json:"after"`
+}
+
+type KAHSectionChange struct {
+	ID     string            `json:"id"`
+	Change string            `json:"change"`
+	Before *KnowledgeSection `json:"before,omitempty"`
+	After  *KnowledgeSection `json:"after,omitempty"`
+}
+
+type KAHSourceChange struct {
+	ID     string           `json:"id"`
+	Change string           `json:"change"`
+	Before *KnowledgeSource `json:"before,omitempty"`
+	After  *KnowledgeSource `json:"after,omitempty"`
+}
+
+type KAHRelationChange struct {
+	Key    string             `json:"key"`
+	Change string             `json:"change"`
+	Before *KnowledgeRelation `json:"before,omitempty"`
+	After  *KnowledgeRelation `json:"after,omitempty"`
+}
+
+type KAHComparisonSummary struct {
+	MetadataChanges int `json:"metadataChanges"`
+	SectionAdds     int `json:"sectionAdds"`
+	SectionRemoves  int `json:"sectionRemoves"`
+	SectionChanges  int `json:"sectionChanges"`
+	SourceAdds      int `json:"sourceAdds"`
+	SourceRemoves   int `json:"sourceRemoves"`
+	SourceChanges   int `json:"sourceChanges"`
+	RelationAdds    int `json:"relationAdds"`
+	RelationRemoves int `json:"relationRemoves"`
+}
+
+type KAHKnowledgeComparison struct {
+	SubmissionID    string                 `json:"submissionId"`
+	Candidate       KAHComparisonRevision  `json:"candidate"`
+	Base            *KAHComparisonRevision `json:"base,omitempty"`
+	HasBase         bool                   `json:"hasBase"`
+	Changed         bool                   `json:"changed"`
+	Summary         KAHComparisonSummary   `json:"summary"`
+	MetadataChanges []KAHFieldChange       `json:"metadataChanges"`
+	SectionChanges  []KAHSectionChange     `json:"sectionChanges"`
+	SourceChanges   []KAHSourceChange      `json:"sourceChanges"`
+	RelationChanges []KAHRelationChange    `json:"relationChanges"`
+}
+
+type KAHAgentReviewResult struct {
+	Submission          KAHSubmission      `json:"submission"`
+	RequestedDecision   string             `json:"requestedDecision"`
+	Decision            string             `json:"decision"`
+	ReviewerType        string             `json:"reviewerType"`
+	Confidence          float64            `json:"confidence"`
+	ConfidenceThreshold float64            `json:"confidenceThreshold"`
+	ApprovalEligible    bool               `json:"approvalEligible"`
+	RequiresHumanReview bool               `json:"requiresHumanReview"`
+	Published           bool               `json:"published"`
+	PublishedKnowledge  *KnowledgeRevision `json:"publishedKnowledge,omitempty"`
 }
