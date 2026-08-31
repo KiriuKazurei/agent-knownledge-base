@@ -10,7 +10,7 @@ import type { KAHSubmission } from './types'
 vi.mock('./api', () => ({
   getRuntime: vi.fn(async () => ({apiBaseUrl:'http://127.0.0.1:1',desktopToken:'x',dataRoot:'data',version:'test'})),
   client: {
-    libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []),
+    libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []), knowledgeSearch: vi.fn(async () => ({ results: [] })),
     document: vi.fn(), knowledge: vi.fn(), submissions: vi.fn(async () => []), submission: vi.fn(), approveSubmission: vi.fn(), rejectSubmission: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
     providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), backup: vi.fn(), createSavedSearch: vi.fn(), deleteSavedSearch: vi.fn()
   }
@@ -25,7 +25,9 @@ test('renders the accessible knowledge workbench', async () => {
   render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
   expect(screen.getByRole('navigation', {name:'知识库导航'})).toBeInTheDocument()
   expect(screen.getByRole('textbox', {name:'搜索知识'})).toBeInTheDocument()
-  expect(await screen.findByText('还没有知识文档')).toBeInTheDocument()
+  expect(screen.queryByRole('button', {name:'切换主题'})).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', {name:'切换详情栏'})).not.toBeInTheDocument()
+  expect(await screen.findByText('还没有来源文档')).toBeInTheDocument()
 })
 
 test('keeps theme and density preferences discoverable in settings', async () => {
@@ -39,6 +41,32 @@ test('keeps theme and density preferences discoverable in settings', async () =>
   fireEvent.click(screen.getByRole('button', { name: '使用浅色主题' }))
   await waitFor(() => expect(window.kah.setTitleBarTheme).toHaveBeenLastCalledWith('light'))
   useUI.setState({ theme: 'dark', density: 'comfortable' })
+})
+
+test('switches between source documents and published knowledge, with a collapsible detail pane', async () => {
+  const timestamp = new Date().toISOString()
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-knowledge', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
+  vi.mocked(client.documents).mockResolvedValue([{ id: 'source-1', libraryId: 'library-knowledge', title: '原始资料', mediaType: 'text/markdown', status: 'ready', tags: [], favorite: false, createdAt: timestamp, updatedAt: timestamp }])
+  vi.mocked(client.knowledgeSearch).mockResolvedValue({ results: [{ uri: 'kah://knowledge/formed-1', revision: 2, title: '已成型知识', description: '经过审核发布的知识条目。', type: 'concept', language: 'zh-CN', primaryPath: [], tags: [], matchedSectionIds: [], matchReason: '', flags: [], trust: 'verified' }] })
+
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  expect(await screen.findByRole('heading', { name: '产品知识库' })).toBeInTheDocument()
+  expect(await screen.findByText('原始资料')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '成型知识' }))
+  expect(await screen.findByText('已成型知识')).toBeInTheDocument()
+  expect(client.knowledgeSearch).toHaveBeenCalledWith('', ['library-knowledge'])
+  expect(screen.getByRole('complementary', { name: '成型知识详情' })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '收起详情栏' }))
+  expect(screen.getByRole('button', { name: '展开详情栏' })).toBeInTheDocument()
+  expect(document.querySelector('.app-shell')).toHaveClass('detail-pane-collapsed')
+  expect(screen.getByRole('complementary', { name: '已折叠的详情栏' })).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '展开详情栏' }))
+  expect(screen.getByRole('button', { name: '收起详情栏' })).toHaveAttribute('aria-pressed', 'true')
+  fireEvent.click(screen.getByRole('button', { name: '来源文档' }))
+  expect(await screen.findByText('原始资料')).toBeInTheDocument()
 })
 
 test('places pending review details in the right pane and resizes it with the keyboard', async () => {
