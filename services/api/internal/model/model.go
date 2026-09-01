@@ -3,33 +3,40 @@ package model
 import "time"
 
 type Library struct {
-	ID                         string    `json:"id"`
-	Name                       string    `json:"name"`
-	Description                string    `json:"description"`
-	AllowRemoteModels          bool      `json:"allowRemoteModels"`
-	AutoSummarizeImports       bool      `json:"autoSummarizeImports"`
-	SummaryProviderID          string    `json:"summaryProviderId,omitempty"`
-	AutoReviewAgentSubmissions bool      `json:"autoReviewAgentSubmissions"`
-	ReviewProviderID           string    `json:"reviewProviderId,omitempty"`
-	CreatedAt                  time.Time `json:"createdAt"`
-	UpdatedAt                  time.Time `json:"updatedAt"`
+	ID                         string     `json:"id"`
+	Name                       string     `json:"name"`
+	Description                string     `json:"description"`
+	Icon                       string     `json:"icon"`
+	Color                      string     `json:"color"`
+	Tags                       []string   `json:"tags"`
+	Favorite                   bool       `json:"favorite"`
+	AllowRemoteModels          bool       `json:"allowRemoteModels"`
+	AutoSummarizeImports       bool       `json:"autoSummarizeImports"`
+	SummaryProviderID          string     `json:"summaryProviderId,omitempty"`
+	AutoReviewAgentSubmissions bool       `json:"autoReviewAgentSubmissions"`
+	ReviewProviderID           string     `json:"reviewProviderId,omitempty"`
+	CreatedAt                  time.Time  `json:"createdAt"`
+	UpdatedAt                  time.Time  `json:"updatedAt"`
+	DeletedAt                  *time.Time `json:"deletedAt,omitempty"`
 }
 
 type Document struct {
-	ID          string    `json:"id"`
-	LibraryID   string    `json:"libraryId"`
-	Title       string    `json:"title"`
-	MediaType   string    `json:"mediaType"`
-	SourcePath  string    `json:"sourcePath,omitempty"`
-	SourceURL   string    `json:"sourceUrl,omitempty"`
-	ObjectPath  string    `json:"objectPath,omitempty"`
-	ContentHash string    `json:"contentHash,omitempty"`
-	Status      string    `json:"status"`
-	Error       string    `json:"error,omitempty"`
-	Tags        []string  `json:"tags"`
-	Favorite    bool      `json:"favorite"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID          string     `json:"id"`
+	LibraryID   string     `json:"libraryId"`
+	Title       string     `json:"title"`
+	MediaType   string     `json:"mediaType"`
+	SourcePath  string     `json:"sourcePath,omitempty"`
+	SourceURL   string     `json:"sourceUrl,omitempty"`
+	ObjectPath  string     `json:"objectPath,omitempty"`
+	ContentHash string     `json:"contentHash,omitempty"`
+	Status      string     `json:"status"`
+	Error       string     `json:"error,omitempty"`
+	Tags        []string   `json:"tags"`
+	FolderIDs   []string   `json:"folderIds"`
+	Favorite    bool       `json:"favorite"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
+	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
 }
 
 type DocumentDetail struct {
@@ -178,13 +185,16 @@ type QueryResponse struct {
 }
 
 type Job struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"`
-	Status    string    `json:"status"`
-	Progress  float64   `json:"progress"`
-	Message   string    `json:"message,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID          string    `json:"id"`
+	Kind        string    `json:"kind"`
+	Status      string    `json:"status"`
+	Progress    float64   `json:"progress"`
+	Message     string    `json:"message,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	OriginJobID string    `json:"originJobId,omitempty"`
+	CanCancel   bool      `json:"canCancel"`
+	CanRetry    bool      `json:"canRetry"`
 }
 
 type ReviewRecord struct {
@@ -252,11 +262,30 @@ type Provider struct {
 }
 
 type SavedSearch struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name"`
-	Query      string   `json:"query"`
-	LibraryIDs []string `json:"libraryIds"`
-	Tags       []string `json:"tags"`
+	ID         string             `json:"id"`
+	Name       string             `json:"name"`
+	Query      string             `json:"query"`
+	View       string             `json:"view"`
+	LibraryIDs []string           `json:"libraryIds"`
+	Tags       []string           `json:"tags"`
+	Filters    SavedSearchFilters `json:"filters"`
+	Sort       SavedSearchSort    `json:"sort"`
+}
+
+type SavedSearchFilters struct {
+	Tags          []string `json:"tags,omitempty"`
+	Favorite      bool     `json:"favorite,omitempty"`
+	FolderIDs     []string `json:"folderIds,omitempty"`
+	Statuses      []string `json:"statuses,omitempty"`
+	MediaTypes    []string `json:"mediaTypes,omitempty"`
+	SourceKinds   []string `json:"sourceKinds,omitempty"`
+	FavoritesOnly bool     `json:"favoritesOnly,omitempty"`
+	TagMode       string   `json:"tagMode,omitempty"`
+}
+
+type SavedSearchSort struct {
+	Field     string `json:"field,omitempty"`
+	Direction string `json:"direction,omitempty"`
 }
 
 type VirtualFolder struct {
@@ -278,6 +307,37 @@ type SourceWatch struct {
 	LastMessage string     `json:"lastMessage,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
+}
+
+type TrashEntry struct {
+	Kind        string    `json:"kind"`
+	ID          string    `json:"id"`
+	LibraryID   string    `json:"libraryId,omitempty"`
+	Name        string    `json:"name"`
+	Description string    `json:"description,omitempty"`
+	DeletedAt   time.Time `json:"deletedAt"`
+	ItemCount   int       `json:"itemCount,omitempty"`
+}
+
+type BackupRecord struct {
+	Path      string    `json:"path"`
+	Size      int64     `json:"size"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type DocumentBatchRequest struct {
+	DocumentIDs []string `json:"documentIds" binding:"required"`
+	Action      string   `json:"action" binding:"required"`
+	Tags        []string `json:"tags,omitempty"`
+	FolderIDs   []string `json:"folderIds,omitempty"`
+	Favorite    *bool    `json:"favorite,omitempty"`
+}
+
+type DocumentBatchResult struct {
+	LibraryID    string   `json:"libraryId"`
+	UpdatedCount int      `json:"updatedCount"`
+	DocumentIDs  []string `json:"documentIds"`
+	JobIDs       []string `json:"jobIds,omitempty"`
 }
 
 type Problem struct {

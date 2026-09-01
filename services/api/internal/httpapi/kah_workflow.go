@@ -19,6 +19,9 @@ func (s *Server) runKAHKnowledgeReview(jobID, submissionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Loading KAH draft and review policy")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	claimed, err := s.Store.MarkKAHSubmissionReviewing(ctx, submissionID)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -68,6 +71,9 @@ func (s *Server) runKAHKnowledgeReview(jobID, submissionID string) {
 		fail(err)
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.45, "Calling configured KAH review model")
 	raw, err := s.Providers.Review(ctx, provider, key, item.Markdown, evidence)
 	if err != nil {
@@ -100,6 +106,9 @@ func (s *Server) runKAHKnowledgeReview(jobID, submissionID string) {
 		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH submission was reviewed by another actor")
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	if output.Decision == "approve" {
 		publish, publishErr := s.Store.CreateJob(ctx, "kah_knowledge_publish", map[string]any{"submissionId": submissionID})
 		if publishErr != nil {
@@ -108,13 +117,18 @@ func (s *Server) runKAHKnowledgeReview(jobID, submissionID string) {
 		}
 		go s.runKAHKnowledgePublish(publish.ID, submissionID)
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH review decision: "+output.Decision)
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH review decision: "+output.Decision)
+	}
 }
 
 func (s *Server) runKAHKnowledgePublish(jobID, submissionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.2, "Publishing approved KAH knowledge")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	item, err := s.Store.GetKAHSubmission(ctx, submissionID)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -128,9 +142,14 @@ func (s *Server) runKAHKnowledgePublish(jobID, submissionID string) {
 		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH submission is not approved for publication")
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	if _, err = s.Store.PublishKAHSubmission(ctx, submissionID); err != nil {
 		s.failJob(ctx, jobID, err)
 		return
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH knowledge published to formal revisions")
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH knowledge published to formal revisions")
+	}
 }

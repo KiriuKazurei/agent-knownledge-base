@@ -295,6 +295,9 @@ func (s *Store) CreateKnowledgeDraft(ctx context.Context, input KnowledgeDraftIn
 	if strings.TrimSpace(input.ClientSubmissionID) == "" {
 		return model.KAHSubmission{}, false, errors.New("idempotency key is required")
 	}
+	if _, err := s.GetLibrary(ctx, input.LibraryID); err != nil {
+		return model.KAHSubmission{}, false, ErrKnowledgeNotFound
+	}
 	validation := ValidateKnowledgePayload(input.Payload, input.RequireSources)
 	if !validation.Valid {
 		return model.KAHSubmission{Validation: validation}, false, errors.New("knowledge payload is invalid")
@@ -351,7 +354,7 @@ func (s *Store) CreateKnowledgeDraft(ctx context.Context, input KnowledgeDraftIn
 			return model.KAHSubmission{}, false, errors.New("base URI must not include a section")
 		}
 		var libraryID string
-		if err := s.DB.QueryRowContext(ctx, `SELECT library_id FROM knowledge_items WHERE id=?`, knowledgeID).Scan(&libraryID); err != nil {
+		if err := s.DB.QueryRowContext(ctx, `SELECT ki.library_id FROM knowledge_items ki JOIN libraries l ON l.id=ki.library_id WHERE ki.id=? AND l.deleted_at IS NULL`, knowledgeID).Scan(&libraryID); err != nil {
 			return model.KAHSubmission{}, false, ErrKnowledgeNotFound
 		}
 		if libraryID != input.LibraryID {
@@ -576,7 +579,7 @@ func (s *Store) findNearKnowledge(ctx context.Context, libraryID, title, exclude
 	if needle == "" {
 		return []model.KnowledgeDirectoryEntry{}, nil
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT ki.id,kr.revision,kr.payload_json,kr.flags_json FROM knowledge_items ki JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id AND kr.revision=ki.stable_revision WHERE ki.library_id=? AND ki.id<>?`, libraryID, excludeID)
+	rows, err := s.DB.QueryContext(ctx, `SELECT ki.id,kr.revision,kr.payload_json,kr.flags_json FROM knowledge_items ki JOIN libraries l ON l.id=ki.library_id JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id AND kr.revision=ki.stable_revision WHERE l.deleted_at IS NULL AND ki.library_id=? AND ki.id<>?`, libraryID, excludeID)
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +631,7 @@ func (s *Store) GetKnowledge(ctx context.Context, uri string, allowDraft bool) (
 	var libraryID, payloadJSON, markdown, contentHash, status, flagsJSON, submittedBy, created string
 	var revision int
 	var stable sql.NullInt64
-	query := `SELECT ki.library_id,ki.stable_revision,kr.revision,kr.payload_json,kr.markdown,kr.content_hash,kr.status,kr.flags_json,kr.submitted_by,kr.created_at FROM knowledge_items ki JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id WHERE ki.id=?`
+	query := `SELECT ki.library_id,ki.stable_revision,kr.revision,kr.payload_json,kr.markdown,kr.content_hash,kr.status,kr.flags_json,kr.submitted_by,kr.created_at FROM knowledge_items ki JOIN libraries l ON l.id=ki.library_id JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id WHERE ki.id=? AND l.deleted_at IS NULL`
 	args := []any{id}
 	if requestedRevision > 0 {
 		query += ` AND kr.revision=?`
@@ -675,7 +678,7 @@ func (s *Store) SearchKnowledge(ctx context.Context, request model.KnowledgeSear
 	if request.Limit < 1 || request.Limit > 100 {
 		request.Limit = 20
 	}
-	query := `SELECT ki.library_id,kr.revision,kr.payload_json,kr.flags_json FROM knowledge_items ki JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id AND kr.revision=ki.stable_revision WHERE kr.status='stable'`
+	query := `SELECT ki.library_id,kr.revision,kr.payload_json,kr.flags_json FROM knowledge_items ki JOIN libraries l ON l.id=ki.library_id JOIN knowledge_revisions kr ON kr.knowledge_id=ki.id AND kr.revision=ki.stable_revision WHERE kr.status='stable' AND l.deleted_at IS NULL`
 	args := []any{}
 	if len(request.Statuses) > 0 && !containsText(request.Statuses, "stable") {
 		return model.KnowledgeSearchResponse{Results: []model.KnowledgeDirectoryEntry{}}, nil
@@ -844,7 +847,7 @@ func overlaps(left, right []string) bool {
 func (s *Store) GetKAHSubmission(ctx context.Context, id string) (model.KAHSubmission, error) {
 	var item model.KAHSubmission
 	var validationJSON, created, updated string
-	err := s.DB.QueryRowContext(ctx, `SELECT id,library_id,knowledge_id,revision,mode,review_status,validation_json,submitted_by_token_id,client_submission_id,created_at,updated_at FROM kah_submissions WHERE id=?`, id).Scan(&item.ID, &item.LibraryID, &item.KnowledgeURI, &item.Revision, &item.Mode, &item.ReviewStatus, &validationJSON, &item.SubmittedByTokenID, &item.ClientSubmissionID, &created, &updated)
+	err := s.DB.QueryRowContext(ctx, `SELECT ks.id,ks.library_id,ks.knowledge_id,ks.revision,ks.mode,ks.review_status,ks.validation_json,ks.submitted_by_token_id,ks.client_submission_id,ks.created_at,ks.updated_at FROM kah_submissions ks JOIN libraries l ON l.id=ks.library_id WHERE ks.id=? AND l.deleted_at IS NULL`, id).Scan(&item.ID, &item.LibraryID, &item.KnowledgeURI, &item.Revision, &item.Mode, &item.ReviewStatus, &validationJSON, &item.SubmittedByTokenID, &item.ClientSubmissionID, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return item, sql.ErrNoRows
 	}
@@ -890,13 +893,13 @@ func (s *Store) GetKAHSubmission(ctx context.Context, id string) (model.KAHSubmi
 }
 
 func (s *Store) ListKAHSubmissions(ctx context.Context, libraryID string) ([]model.KAHSubmission, error) {
-	query := `SELECT id FROM kah_submissions`
+	query := `SELECT ks.id FROM kah_submissions ks JOIN libraries l ON l.id=ks.library_id WHERE l.deleted_at IS NULL`
 	args := []any{}
 	if libraryID != "" {
-		query += ` WHERE library_id=?`
+		query += ` AND ks.library_id=?`
 		args = append(args, libraryID)
 	}
-	query += ` ORDER BY updated_at DESC`
+	query += ` ORDER BY ks.updated_at DESC`
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err

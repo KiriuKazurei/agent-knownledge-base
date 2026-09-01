@@ -81,16 +81,17 @@ func (s *Store) migrate() error {
 		`PRAGMA foreign_keys=ON`,
 		`CREATE TABLE IF NOT EXISTS libraries (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+			icon TEXT NOT NULL DEFAULT 'library', color TEXT NOT NULL DEFAULT 'jade', tags_json TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0,
 			allow_remote_models INTEGER NOT NULL DEFAULT 0, auto_summarize_imports INTEGER NOT NULL DEFAULT 0,
 			summary_provider_id TEXT NOT NULL DEFAULT '', auto_review_agent_submissions INTEGER NOT NULL DEFAULT 0,
-			review_provider_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+			review_provider_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS documents (
 			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
 			title TEXT NOT NULL, media_type TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '',
 			source_url TEXT NOT NULL DEFAULT '', object_path TEXT NOT NULL DEFAULT '', content_hash TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+			created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_library ON documents(library_id, updated_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS chunks (
@@ -132,7 +133,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_skill_mappings_skill ON skill_mappings(skill_id)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
-			message TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+			message TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', origin_job_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS agent_tokens (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scopes_json TEXT NOT NULL,
@@ -143,7 +144,7 @@ func (s *Store) migrate() error {
 			model TEXT NOT NULL DEFAULT '', embedding_model TEXT NOT NULL DEFAULT '', local INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS saved_searches (
-			id TEXT PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, library_ids_json TEXT NOT NULL DEFAULT '[]', tags_json TEXT NOT NULL DEFAULT '[]'
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, query TEXT NOT NULL, view TEXT NOT NULL DEFAULT 'sources', library_ids_json TEXT NOT NULL DEFAULT '[]', tags_json TEXT NOT NULL DEFAULT '[]', filters_json TEXT NOT NULL DEFAULT '{}', sort_json TEXT NOT NULL DEFAULT '{}'
 		)`,
 		`CREATE TABLE IF NOT EXISTS virtual_folders (
 			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
@@ -289,10 +290,15 @@ func (s *Store) migrate() error {
 		name       string
 		definition string
 	}{
+		{"icon", "TEXT NOT NULL DEFAULT 'library'"},
+		{"color", "TEXT NOT NULL DEFAULT 'jade'"},
+		{"tags_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"favorite", "INTEGER NOT NULL DEFAULT 0"},
 		{"auto_summarize_imports", "INTEGER NOT NULL DEFAULT 0"},
 		{"summary_provider_id", "TEXT NOT NULL DEFAULT ''"},
 		{"auto_review_agent_submissions", "INTEGER NOT NULL DEFAULT 0"},
 		{"review_provider_id", "TEXT NOT NULL DEFAULT ''"},
+		{"deleted_at", "TEXT"},
 	} {
 		var existing string
 		err := s.DB.QueryRow(`SELECT name FROM pragma_table_info('libraries') WHERE name=?`, column.name).Scan(&existing)
@@ -302,6 +308,35 @@ func (s *Store) migrate() error {
 			}
 		} else if err != nil {
 			return fmt.Errorf("migration failed checking libraries.%s: %w", column.name, err)
+		}
+	}
+	for _, migration := range []struct {
+		table      string
+		name       string
+		definition string
+	}{
+		{"documents", "deleted_at", "TEXT"},
+		{"jobs", "origin_job_id", "TEXT NOT NULL DEFAULT ''"},
+		{"saved_searches", "view", "TEXT NOT NULL DEFAULT 'sources'"},
+		{"saved_searches", "filters_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"saved_searches", "sort_json", "TEXT NOT NULL DEFAULT '{}'"},
+	} {
+		var existing string
+		err := s.DB.QueryRow(`SELECT name FROM pragma_table_info('`+migration.table+`') WHERE name=?`, migration.name).Scan(&existing)
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.DB.Exec(`ALTER TABLE ` + migration.table + ` ADD COLUMN ` + migration.name + ` ` + migration.definition); err != nil {
+				return fmt.Errorf("migration failed adding %s.%s: %w", migration.table, migration.name, err)
+			}
+		} else if err != nil {
+			return fmt.Errorf("migration failed checking %s.%s: %w", migration.table, migration.name, err)
+		}
+	}
+	for _, indexStatement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_libraries_deleted ON libraries(deleted_at, updated_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_documents_deleted ON documents(deleted_at, library_id, updated_at DESC)`,
+	} {
+		if _, err := s.DB.Exec(indexStatement); err != nil {
+			return fmt.Errorf("migration failed creating soft-delete index: %w", err)
 		}
 	}
 	var confidenceColumn string
@@ -339,23 +374,17 @@ func boolInt(value bool) int {
 }
 
 func (s *Store) ListLibraries(ctx context.Context) ([]model.Library, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries ORDER BY lower(name)`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT `+librarySelectColumns+` FROM libraries WHERE deleted_at IS NULL ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := []model.Library{}
 	for rows.Next() {
-		var item model.Library
-		var allow, autoSummarize, autoReview int
-		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Name, &item.Description, &allow, &autoSummarize, &item.SummaryProviderID, &autoReview, &item.ReviewProviderID, &created, &updated); err != nil {
+		item, err := scanLibrary(rows)
+		if err != nil {
 			return nil, err
 		}
-		item.AllowRemoteModels = allow == 1
-		item.AutoSummarizeImports = autoSummarize == 1
-		item.AutoReviewAgentSubmissions = autoReview == 1
-		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -366,51 +395,134 @@ func (s *Store) CreateLibrary(ctx context.Context, name, description string) (mo
 		return model.Library{}, errors.New("name is required")
 	}
 	t, stamp := now()
-	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), CreatedAt: t, UpdatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, 0, 0, "", 0, "", stamp, stamp)
+	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), Icon: "library", Color: "jade", Tags: []string{}, CreatedAt: t, UpdatedAt: t}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,icon,color,tags_json,favorite,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, item.Icon, item.Color, "[]", 0, 0, 0, "", 0, "", stamp, stamp)
 	return item, err
 }
 
 func (s *Store) UpdateLibrary(ctx context.Context, id string, name, description *string, allow, autoSummarize, autoReview *bool, summaryProviderID, reviewProviderID *string) (model.Library, error) {
-	var current model.Library
-	var allowInt, autoSummarizeInt, autoReviewInt int
-	var created, updated string
-	err := s.DB.QueryRowContext(ctx, `SELECT id,name,description,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at FROM libraries WHERE id=?`, id).Scan(&current.ID, &current.Name, &current.Description, &allowInt, &autoSummarizeInt, &current.SummaryProviderID, &autoReviewInt, &current.ReviewProviderID, &created, &updated)
+	return s.UpdateLibraryPatch(ctx, id, LibraryPatch{
+		Name: name, Description: description, AllowRemoteModels: allow, AutoSummarizeImports: autoSummarize,
+		AutoReviewAgentSubmissions: autoReview, SummaryProviderID: summaryProviderID, ReviewProviderID: reviewProviderID,
+	})
+}
+
+type LibraryPatch struct {
+	Name                       *string
+	Description                *string
+	Icon                       *string
+	Color                      *string
+	Tags                       *[]string
+	Favorite                   *bool
+	AllowRemoteModels          *bool
+	AutoSummarizeImports       *bool
+	AutoReviewAgentSubmissions *bool
+	SummaryProviderID          *string
+	ReviewProviderID           *string
+}
+
+func normalizeLibraryTags(tags []string) []string {
+	seen := make(map[string]struct{}, len(tags))
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || len([]rune(tag)) > 60 {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		result = append(result, tag)
+		if len(result) == 30 {
+			break
+		}
+	}
+	return result
+}
+
+func normalizeLibraryIcon(icon string) string {
+	icon = strings.TrimSpace(icon)
+	allowed := map[string]bool{"library": true, "book-open": true, "bot": true, "folder": true, "sparkles": true, "database": true, "archive": true, "tag": true}
+	if !allowed[icon] {
+		return "library"
+	}
+	return icon
+}
+
+func normalizeLibraryColor(color string) string {
+	color = strings.TrimSpace(color)
+	allowed := map[string]bool{"jade": true, "blue": true, "amber": true, "violet": true, "rose": true, "slate": true}
+	if !allowed[color] {
+		return "jade"
+	}
+	return color
+}
+
+func (s *Store) UpdateLibraryPatch(ctx context.Context, id string, patch LibraryPatch) (model.Library, error) {
+	current, err := s.GetLibrary(ctx, id)
 	if err != nil {
 		return current, err
 	}
-	current.AllowRemoteModels = allowInt == 1
-	current.AutoSummarizeImports = autoSummarizeInt == 1
-	current.AutoReviewAgentSubmissions = autoReviewInt == 1
-	current.CreatedAt = parseTime(created)
-	if name != nil && strings.TrimSpace(*name) != "" {
-		current.Name = strings.TrimSpace(*name)
+	if patch.Name != nil {
+		name := strings.TrimSpace(*patch.Name)
+		if name == "" || len([]rune(name)) > 120 {
+			return current, errors.New("library name must contain 1-120 characters")
+		}
+		current.Name = name
 	}
-	if description != nil {
-		current.Description = strings.TrimSpace(*description)
+	if patch.Description != nil {
+		description := strings.TrimSpace(*patch.Description)
+		if len([]rune(description)) > 1000 {
+			return current, errors.New("library description must be at most 1000 characters")
+		}
+		current.Description = description
 	}
-	if allow != nil {
-		current.AllowRemoteModels = *allow
+	if patch.Icon != nil {
+		current.Icon = normalizeLibraryIcon(*patch.Icon)
 	}
-	if autoSummarize != nil {
-		current.AutoSummarizeImports = *autoSummarize
+	if patch.Color != nil {
+		current.Color = normalizeLibraryColor(*patch.Color)
 	}
-	if autoReview != nil {
-		current.AutoReviewAgentSubmissions = *autoReview
+	if patch.Tags != nil {
+		current.Tags = normalizeLibraryTags(*patch.Tags)
 	}
-	if reviewProviderID != nil {
-		current.ReviewProviderID = strings.TrimSpace(*reviewProviderID)
+	if patch.Favorite != nil {
+		current.Favorite = *patch.Favorite
 	}
-	if summaryProviderID != nil {
-		current.SummaryProviderID = strings.TrimSpace(*summaryProviderID)
+	if patch.AllowRemoteModels != nil {
+		current.AllowRemoteModels = *patch.AllowRemoteModels
 	}
+	if patch.AutoSummarizeImports != nil {
+		current.AutoSummarizeImports = *patch.AutoSummarizeImports
+	}
+	if patch.AutoReviewAgentSubmissions != nil {
+		current.AutoReviewAgentSubmissions = *patch.AutoReviewAgentSubmissions
+	}
+	if patch.ReviewProviderID != nil {
+		current.ReviewProviderID = strings.TrimSpace(*patch.ReviewProviderID)
+	}
+	if patch.SummaryProviderID != nil {
+		current.SummaryProviderID = strings.TrimSpace(*patch.SummaryProviderID)
+	}
+	if current.Tags == nil {
+		current.Tags = []string{}
+	}
+	tagsJSON, _ := json.Marshal(current.Tags)
+	var updated string
 	current.UpdatedAt, updated = now()
-	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,allow_remote_models=?,auto_summarize_imports=?,summary_provider_id=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, boolInt(current.AllowRemoteModels), boolInt(current.AutoSummarizeImports), current.SummaryProviderID, boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
+	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,icon=?,color=?,tags_json=?,favorite=?,allow_remote_models=?,auto_summarize_imports=?,summary_provider_id=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, current.Icon, current.Color, string(tagsJSON), boolInt(current.Favorite), boolInt(current.AllowRemoteModels), boolInt(current.AutoSummarizeImports), current.SummaryProviderID, boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
 	return current, err
 }
 
 func (s *Store) DeleteLibrary(ctx context.Context, id string) error {
-	result, err := s.DB.ExecContext(ctx, `DELETE FROM libraries WHERE id=?`, id)
+	_, stamp := now()
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE libraries SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL`, stamp, stamp, id)
 	if err != nil {
 		return err
 	}
@@ -418,17 +530,20 @@ func (s *Store) DeleteLibrary(ctx context.Context, id string) error {
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `UPDATE source_watches SET enabled=0,last_message='Paused because the knowledge library is in Trash',updated_at=? WHERE library_id=?`, stamp, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListDocuments(ctx context.Context, libraryID string) ([]model.Document, error) {
-	query := `SELECT id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at FROM documents`
+	query := `SELECT d.id,d.library_id,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.tags_json,d.favorite,d.created_at,d.updated_at FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.deleted_at IS NULL AND l.deleted_at IS NULL`
 	args := []any{}
 	if libraryID != "" {
-		query += ` WHERE library_id=?`
+		query += ` AND d.library_id=?`
 		args = append(args, libraryID)
 	}
-	query += ` ORDER BY updated_at DESC`
+	query += ` ORDER BY d.updated_at DESC`
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -460,12 +575,13 @@ func scanDocument(row rowScanner) (model.Document, error) {
 		item.Tags = []string{}
 	}
 	item.Favorite = favorite == 1
+	item.FolderIDs = []string{}
 	item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
 	return item, nil
 }
 
 func (s *Store) GetDocument(ctx context.Context, id string) (model.DocumentDetail, error) {
-	row := s.DB.QueryRowContext(ctx, `SELECT id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at FROM documents WHERE id=?`, id)
+	row := s.DB.QueryRowContext(ctx, `SELECT d.id,d.library_id,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.tags_json,d.favorite,d.created_at,d.updated_at FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.id=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL`, id)
 	doc, err := scanDocument(row)
 	if err != nil {
 		return model.DocumentDetail{}, err
@@ -485,7 +601,19 @@ func (s *Store) GetDocument(ctx context.Context, id string) (model.DocumentDetai
 		_ = json.Unmarshal([]byte(location), &chunk.Location)
 		chunks = append(chunks, chunk)
 	}
-	return model.DocumentDetail{Document: doc, Preview: chunks}, rows.Err()
+	folderRows, folderErr := s.DB.QueryContext(ctx, `SELECT folder_id FROM document_folders WHERE document_id=? ORDER BY folder_id`, id)
+	if folderErr != nil {
+		return model.DocumentDetail{}, folderErr
+	}
+	defer folderRows.Close()
+	for folderRows.Next() {
+		var folderID string
+		if err := folderRows.Scan(&folderID); err != nil {
+			return model.DocumentDetail{}, err
+		}
+		doc.FolderIDs = append(doc.FolderIDs, folderID)
+	}
+	return model.DocumentDetail{Document: doc, Preview: chunks}, errors.Join(rows.Err(), folderRows.Err())
 }
 
 func (s *Store) DocumentNeedsTextRepair(ctx context.Context, id string) (bool, error) {
@@ -498,6 +626,13 @@ func (s *Store) DocumentNeedsTextRepair(ctx context.Context, id string) (bool, e
 }
 
 func (s *Store) CreatePendingDocument(ctx context.Context, libraryID, title, mediaType, sourcePath, sourceURL, objectPath, hash string) (model.Document, error) {
+	var active int
+	if err := s.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM libraries WHERE id=? AND deleted_at IS NULL`, libraryID).Scan(&active); err != nil {
+		return model.Document{}, err
+	}
+	if active == 0 {
+		return model.Document{}, sql.ErrNoRows
+	}
 	t, stamp := now()
 	doc := model.Document{ID: uuid.NewString(), LibraryID: libraryID, Title: title, MediaType: mediaType, SourcePath: sourcePath, SourceURL: sourceURL, ObjectPath: objectPath, ContentHash: hash, Status: "pending", Tags: []string{}, CreatedAt: t, UpdatedAt: t}
 	_, err := s.DB.ExecContext(ctx, `INSERT INTO documents(id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,'','[]',0,?,?)`, doc.ID, doc.LibraryID, doc.Title, doc.MediaType, doc.SourcePath, doc.SourceURL, doc.ObjectPath, doc.ContentHash, doc.Status, stamp, stamp)
@@ -520,15 +655,19 @@ func (s *Store) ReplaceChunks(ctx context.Context, documentID string, chunks []m
 		}
 	}
 	_, stamp := now()
-	if _, err := tx.ExecContext(ctx, `UPDATE documents SET status='ready',error='',updated_at=? WHERE id=?`, stamp, documentID); err != nil {
+	result, err := tx.ExecContext(ctx, `UPDATE documents SET status='ready',error='',updated_at=? WHERE id=? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=documents.library_id AND l.deleted_at IS NULL)`, stamp, documentID)
+	if err != nil {
 		return err
+	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		return sql.ErrNoRows
 	}
 	return tx.Commit()
 }
 
 func (s *Store) UpdateDocumentContent(ctx context.Context, id, objectPath, contentHash string) error {
 	_, stamp := now()
-	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET object_path=?,content_hash=?,status='pending',error='',updated_at=? WHERE id=?`, objectPath, contentHash, stamp, id)
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET object_path=?,content_hash=?,status='pending',error='',updated_at=? WHERE id=? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=documents.library_id AND l.deleted_at IS NULL)`, objectPath, contentHash, stamp, id)
 	if err != nil {
 		return err
 	}
@@ -541,7 +680,7 @@ func (s *Store) UpdateDocumentContent(ctx context.Context, id, objectPath, conte
 
 func (s *Store) FailDocument(ctx context.Context, id string, cause error) error {
 	_, stamp := now()
-	_, err := s.DB.ExecContext(ctx, `UPDATE documents SET status='failed',error=?,updated_at=? WHERE id=?`, cause.Error(), stamp, id)
+	_, err := s.DB.ExecContext(ctx, `UPDATE documents SET status='failed',error=?,updated_at=? WHERE id=? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=documents.library_id AND l.deleted_at IS NULL)`, cause.Error(), stamp, id)
 	return err
 }
 
@@ -570,7 +709,8 @@ func (s *Store) UpdateDocument(ctx context.Context, id string, title *string, ta
 }
 
 func (s *Store) DeleteDocument(ctx context.Context, id string) error {
-	result, err := s.DB.ExecContext(ctx, `DELETE FROM documents WHERE id=?`, id)
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET deleted_at=?,updated_at=? WHERE id=? AND deleted_at IS NULL`, stamp, stamp, id)
 	if err != nil {
 		return err
 	}
@@ -1153,7 +1293,7 @@ func (s *Store) SetSkillLinks(ctx context.Context, id string, uses, requires []s
 				continue
 			}
 			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM libraries WHERE id=?`, libraryID).Scan(&exists); err != nil || exists == 0 {
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM libraries WHERE id=? AND deleted_at IS NULL`, libraryID).Scan(&exists); err != nil || exists == 0 {
 				if err != nil {
 					return model.Skill{}, err
 				}
@@ -1332,18 +1472,38 @@ func (s *Store) CreateJob(ctx context.Context, kind string, payload any) (model.
 	}
 	t, stamp := now()
 	job := model.Job{ID: uuid.NewString(), Kind: kind, Status: "queued", Progress: 0, CreatedAt: t, UpdatedAt: t}
-	_, err = s.DB.ExecContext(ctx, `INSERT INTO jobs(id,kind,status,progress,message,payload_json,created_at,updated_at) VALUES(?,?,'queued',0,'',?,?,?)`, job.ID, kind, string(bytes), stamp, stamp)
+	job.CanCancel = true
+	_, err = s.DB.ExecContext(ctx, `INSERT INTO jobs(id,kind,status,progress,message,payload_json,origin_job_id,created_at,updated_at) VALUES(?,?,'queued',0,'',?,'',?,?)`, job.ID, kind, string(bytes), stamp, stamp)
 	return job, err
 }
 
 func (s *Store) UpdateJob(ctx context.Context, id, status string, progress float64, message string) error {
 	_, stamp := now()
-	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status=?,progress=?,message=?,updated_at=? WHERE id=?`, status, progress, message, stamp, id)
+	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status=CASE WHEN status='cancellation_requested' THEN 'cancelled' ELSE ? END,progress=?,message=CASE WHEN status='cancellation_requested' THEN 'Cancelled by user' ELSE ? END,updated_at=? WHERE id=? AND status<>'cancelled'`, status, progress, message, stamp, id)
 	return err
 }
 
 func (s *Store) ListJobs(ctx context.Context) ([]model.Job, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,kind,status,progress,message,created_at,updated_at FROM jobs ORDER BY created_at DESC LIMIT 200`)
+	return s.ListJobsFiltered(ctx, "", "")
+}
+
+func (s *Store) ListJobsFiltered(ctx context.Context, status, kind string) ([]model.Job, error) {
+	query := `SELECT id,kind,status,progress,message,origin_job_id,created_at,updated_at FROM jobs`
+	conditions := []string{}
+	args := []any{}
+	if strings.TrimSpace(status) != "" {
+		conditions = append(conditions, "status=?")
+		args = append(args, strings.TrimSpace(status))
+	}
+	if strings.TrimSpace(kind) != "" {
+		conditions = append(conditions, "kind=?")
+		args = append(args, strings.TrimSpace(kind))
+	}
+	if len(conditions) > 0 {
+		query += ` WHERE ` + strings.Join(conditions, " AND ")
+	}
+	query += ` ORDER BY created_at DESC LIMIT 200`
+	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1352,17 +1512,19 @@ func (s *Store) ListJobs(ctx context.Context) ([]model.Job, error) {
 	for rows.Next() {
 		var item model.Job
 		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Progress, &item.Message, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Progress, &item.Message, &item.OriginJobID, &created, &updated); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
+		item.CanCancel = item.Status == "queued" || item.Status == "running"
+		item.CanRetry = item.Status == "failed" || item.Status == "cancelled"
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
 func (s *Store) ListSavedSearches(ctx context.Context) ([]model.SavedSearch, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,query,library_ids_json,tags_json FROM saved_searches ORDER BY lower(name)`)
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,name,query,view,library_ids_json,tags_json,filters_json,sort_json FROM saved_searches ORDER BY lower(name)`)
 	if err != nil {
 		return nil, err
 	}
@@ -1370,39 +1532,70 @@ func (s *Store) ListSavedSearches(ctx context.Context) ([]model.SavedSearch, err
 	items := []model.SavedSearch{}
 	for rows.Next() {
 		var item model.SavedSearch
-		var libraries, tags string
-		if err := rows.Scan(&item.ID, &item.Name, &item.Query, &libraries, &tags); err != nil {
+		var libraries, tags, filters, sortValue string
+		if err := rows.Scan(&item.ID, &item.Name, &item.Query, &item.View, &libraries, &tags, &filters, &sortValue); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(libraries), &item.LibraryIDs)
 		_ = json.Unmarshal([]byte(tags), &item.Tags)
+		_ = json.Unmarshal([]byte(filters), &item.Filters)
+		_ = json.Unmarshal([]byte(sortValue), &item.Sort)
 		if item.LibraryIDs == nil {
 			item.LibraryIDs = []string{}
 		}
 		if item.Tags == nil {
 			item.Tags = []string{}
 		}
+		if item.Filters.Tags == nil {
+			item.Filters.Tags = append([]string{}, item.Tags...)
+		}
+		if item.Filters.FavoritesOnly {
+			item.Filters.Favorite = true
+		}
 		items = append(items, item)
 	}
 	return items, rows.Err()
 }
 
-func (s *Store) CreateSavedSearch(ctx context.Context, name, query string, libraries, tags []string) (model.SavedSearch, error) {
+func (s *Store) CreateSavedSearch(ctx context.Context, input model.SavedSearch) (model.SavedSearch, error) {
+	name, query := input.Name, input.Query
 	name = strings.TrimSpace(name)
 	query = strings.TrimSpace(query)
 	if name == "" || query == "" {
 		return model.SavedSearch{}, errors.New("name and query are required")
 	}
-	if libraries == nil {
-		libraries = []string{}
+	if input.LibraryIDs == nil {
+		input.LibraryIDs = []string{}
 	}
-	if tags == nil {
-		tags = []string{}
+	if input.Tags == nil {
+		input.Tags = []string{}
 	}
-	libraryJSON, _ := json.Marshal(libraries)
-	tagsJSON, _ := json.Marshal(tags)
-	item := model.SavedSearch{ID: uuid.NewString(), Name: name, Query: query, LibraryIDs: libraries, Tags: tags}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO saved_searches(id,name,query,library_ids_json,tags_json) VALUES(?,?,?,?,?)`, item.ID, item.Name, item.Query, string(libraryJSON), string(tagsJSON))
+	input.Tags = normalizeLibraryTags(input.Tags)
+	if input.Filters.Tags == nil {
+		input.Filters.Tags = append([]string{}, input.Tags...)
+	} else {
+		input.Filters.Tags = normalizeLibraryTags(input.Filters.Tags)
+		input.Tags = append([]string{}, input.Filters.Tags...)
+	}
+	if input.Filters.FavoritesOnly {
+		input.Filters.Favorite = true
+	}
+	input.ID, input.Name, input.Query = uuid.NewString(), name, query
+	if input.View != "knowledge" {
+		input.View = "sources"
+	}
+	if input.Filters.TagMode != "any" {
+		input.Filters.TagMode = "all"
+	}
+	if input.Sort.Field == "" {
+		input.Sort = model.SavedSearchSort{Field: "updatedAt", Direction: "desc"}
+	}
+	libraryJSON, _ := json.Marshal(input.LibraryIDs)
+	tagsJSON, _ := json.Marshal(input.Tags)
+	filtersJSON, _ := json.Marshal(input.Filters)
+	sortJSON, _ := json.Marshal(input.Sort)
+	item := input
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO saved_searches(id,name,query,view,library_ids_json,tags_json,filters_json,sort_json) VALUES(?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Query, item.View, string(libraryJSON), string(tagsJSON), string(filtersJSON), string(sortJSON))
 	return item, err
 }
 
@@ -1434,7 +1627,7 @@ func lexicalScore(query, text string) float64 {
 }
 
 func (s *Store) Search(ctx context.Context, req model.QueryRequest) ([]model.Evidence, error) {
-	query := `SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash,d.library_id,d.title FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.status='ready'`
+	query := `SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash,d.library_id,d.title FROM chunks c JOIN documents d ON d.id=c.document_id JOIN libraries l ON l.id=d.library_id WHERE d.status='ready' AND d.deleted_at IS NULL AND l.deleted_at IS NULL`
 	args := []any{}
 	if len(req.LibraryIDs) > 0 {
 		query += ` AND d.library_id IN (` + strings.TrimRight(strings.Repeat("?,", len(req.LibraryIDs)), ",") + `)`
@@ -1482,7 +1675,7 @@ func (s *Store) EvidenceByChunkIDs(ctx context.Context, ids []string) (map[strin
 	for index, id := range ids {
 		args[index] = id
 	}
-	rows, err := s.DB.QueryContext(ctx, `SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash,d.library_id,d.title FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.status='ready' AND c.id IN (`+placeholders+`)`, args...)
+	rows, err := s.DB.QueryContext(ctx, `SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash,d.library_id,d.title FROM chunks c JOIN documents d ON d.id=c.document_id JOIN libraries l ON l.id=d.library_id WHERE d.status='ready' AND d.deleted_at IS NULL AND l.deleted_at IS NULL AND c.id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1593,7 +1786,7 @@ func (s *Store) LibrariesAllowRemote(ctx context.Context, ids []string) (bool, e
 	if len(ids) == 0 {
 		return false, nil
 	}
-	query := `SELECT COUNT(*), COUNT(CASE WHEN allow_remote_models=0 THEN 1 END) FROM libraries WHERE id IN (` + strings.TrimRight(strings.Repeat("?,", len(ids)), ",") + `)`
+	query := `SELECT COUNT(*), COUNT(CASE WHEN allow_remote_models=0 THEN 1 END) FROM libraries WHERE deleted_at IS NULL AND id IN (` + strings.TrimRight(strings.Repeat("?,", len(ids)), ",") + `)`
 	args := make([]any, len(ids))
 	for i, id := range ids {
 		args[i] = id
@@ -1641,7 +1834,7 @@ func (s *Store) QueryEvidenceContains(ctx context.Context, requestID, chunkID st
 
 func (s *Store) ChunkLibrary(ctx context.Context, chunkID string) (string, error) {
 	var libraryID string
-	err := s.DB.QueryRowContext(ctx, `SELECT d.library_id FROM chunks c JOIN documents d ON d.id=c.document_id WHERE c.id=?`, chunkID).Scan(&libraryID)
+	err := s.DB.QueryRowContext(ctx, `SELECT d.library_id FROM chunks c JOIN documents d ON d.id=c.document_id JOIN libraries l ON l.id=d.library_id WHERE c.id=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL`, chunkID).Scan(&libraryID)
 	return libraryID, err
 }
 
@@ -1676,6 +1869,33 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]model.AuditEntry, e
 	}
 	return items, rows.Err()
 }
+
+func (s *Store) ListBackups(ctx context.Context) ([]model.BackupRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(filepath.Join(s.DataRoot, "backups"))
+	if errors.Is(err, os.ErrNotExist) {
+		return []model.BackupRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	items := make([]model.BackupRecord, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".kahbackup") {
+			continue
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil, infoErr
+		}
+		items = append(items, model.BackupRecord{Path: filepath.ToSlash(filepath.Join("backups", entry.Name())), Size: info.Size(), CreatedAt: info.ModTime().UTC()})
+	}
+	sort.Slice(items, func(left, right int) bool { return items[left].CreatedAt.After(items[right].CreatedAt) })
+	return items, nil
+}
+
 func (s *Store) CreateBackup(ctx context.Context, includeIndexes bool) (string, string, error) {
 	if _, err := s.DB.ExecContext(ctx, `PRAGMA wal_checkpoint(FULL)`); err != nil {
 		return "", "", err

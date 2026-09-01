@@ -12,7 +12,7 @@ vi.mock('./api', () => ({
   client: {
     libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []), knowledgeSearch: vi.fn(async () => ({ results: [] })),
     document: vi.fn(), knowledge: vi.fn(), submissions: vi.fn(async () => []), submission: vi.fn(), approveSubmission: vi.fn(), rejectSubmission: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
-    providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), backup: vi.fn(), createSavedSearch: vi.fn(), deleteSavedSearch: vi.fn()
+    providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), createWatch: vi.fn(), watches: vi.fn(async () => []), updateWatch: vi.fn(), scanWatch: vi.fn(), deleteWatch: vi.fn(), backup: vi.fn(), backups: vi.fn(async () => []), verifyBackup: vi.fn(), rebuildIndex: vi.fn(), createSavedSearch: vi.fn(), updateSavedSearch: vi.fn(), deleteSavedSearch: vi.fn(), trash: vi.fn(async () => []), restoreTrash: vi.fn(), purgeTrash: vi.fn(), emptyTrash: vi.fn(), batchDocuments: vi.fn(), reindexDocument: vi.fn(), relinkDocument: vi.fn(), cancelJob: vi.fn(), retryJob: vi.fn(), testProvider: vi.fn(), deleteProvider: vi.fn(), providerModels: vi.fn()
   }
 }))
 
@@ -30,6 +30,27 @@ test('renders the accessible knowledge workbench', async () => {
   expect(await screen.findByText('还没有来源文档')).toBeInTheDocument()
 })
 
+test('opens the command palette with disabled reasons for unavailable actions', async () => {
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  fireEvent.keyDown(window, { key: 'P', ctrlKey: true, shiftKey: true })
+  expect(await screen.findByRole('textbox', { name: '筛选命令' })).toBeInTheDocument()
+  expect(screen.getByRole('option', { name: '新建知识库' })).toBeInTheDocument()
+  const importCommand = screen.getByRole('option', { name: /导入文件/ })
+  expect(importCommand).toHaveAttribute('aria-disabled', 'true')
+  expect(importCommand).toHaveAttribute('title', '请先选择知识库')
+})
+
+test('lists and restores trash items from the recoverable workspace', async () => {
+  const timestamp = new Date().toISOString()
+  vi.mocked(client.trash).mockResolvedValue([{ kind: 'document', id: 'trashed-document', name: '已删除资料', description: 'text/markdown', itemCount: 0, deletedAt: timestamp }])
+  vi.mocked(client.restoreTrash).mockResolvedValue(undefined)
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  fireEvent.click(screen.getByRole('button', { name: /回收站/ }))
+  expect(await screen.findByText('已删除资料')).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '恢复' }))
+  await waitFor(() => expect(client.restoreTrash).toHaveBeenCalledWith('document', 'trashed-document'))
+})
+
 test('keeps theme and density preferences discoverable in settings', async () => {
   useUI.setState({ theme: 'dark', density: 'comfortable' })
   render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
@@ -45,7 +66,7 @@ test('keeps theme and density preferences discoverable in settings', async () =>
 
 test('switches between source documents and published knowledge, with a collapsible detail pane', async () => {
   const timestamp = new Date().toISOString()
-  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-knowledge', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-knowledge', name: '产品知识库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
   vi.mocked(client.documents).mockResolvedValue([{ id: 'source-1', libraryId: 'library-knowledge', title: '原始资料', mediaType: 'text/markdown', status: 'ready', tags: [], favorite: false, createdAt: timestamp, updatedAt: timestamp }])
   vi.mocked(client.knowledgeSearch).mockResolvedValue({ results: [{ uri: 'kah://knowledge/formed-1', revision: 2, title: '已成型知识', description: '经过审核发布的知识条目。', type: 'concept', language: 'zh-CN', primaryPath: [], tags: [], matchedSectionIds: [], matchReason: '', flags: [], trust: 'verified' }] })
 
@@ -69,11 +90,55 @@ test('switches between source documents and published knowledge, with a collapsi
   expect(await screen.findByText('原始资料')).toBeInTheDocument()
 })
 
+test('edits library name, mark, tags, color, and icon from library details', async () => {
+  const timestamp = new Date().toISOString()
+  const library = { id: 'library-edit', name: '待编辑知识库', description: '旧描述', icon: 'library', color: 'jade', tags: ['旧标签'], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }
+  const updated = { ...library, name: '已编辑知识库', description: '新描述', icon: 'book-open', color: 'violet', tags: ['产品', '内部'], favorite: true, updatedAt: new Date(Date.now() + 1000).toISOString() }
+  vi.mocked(client.libraries).mockResolvedValue([library])
+  vi.mocked(client.updateLibrary).mockResolvedValue(updated)
+
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  expect((await screen.findAllByRole('heading', { name: '待编辑知识库' })).length).toBeGreaterThanOrEqual(1)
+  fireEvent.click(screen.getByRole('button', { name: '编辑知识库 待编辑知识库' }))
+  expect((await screen.findAllByRole('heading', { name: '待编辑知识库' })).length).toBeGreaterThanOrEqual(2)
+  fireEvent.change(screen.getByLabelText('名称'), { target: { value: '已编辑知识库' } })
+  fireEvent.change(screen.getByLabelText('描述'), { target: { value: '新描述' } })
+  fireEvent.click(screen.getByRole('button', { name: '使用阅读图标' }))
+  fireEvent.click(screen.getByRole('button', { name: '使用紫罗兰颜色' }))
+  fireEvent.change(screen.getByLabelText('标签'), { target: { value: '产品，内部' } })
+  fireEvent.click(screen.getByRole('checkbox', { name: /标记为重要/ }))
+  fireEvent.click(screen.getByRole('button', { name: '保存详情' }))
+
+  await waitFor(() => expect(client.updateLibrary).toHaveBeenCalledWith('library-edit', { name: '已编辑知识库', description: '新描述', icon: 'book-open', color: 'violet', tags: ['产品', '内部'], favorite: true }))
+  expect(await screen.findByText('知识库详情已保存。')).toBeInTheDocument()
+})
+
+test('opens the content filter and filters source documents by tag', async () => {
+  const timestamp = new Date().toISOString()
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-filter', name: '筛选测试库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
+  vi.mocked(client.documents).mockResolvedValue([
+    { id: 'document-product', libraryId: 'library-filter', title: '产品文档', mediaType: 'text/markdown', status: 'ready', tags: ['产品'], favorite: false, createdAt: timestamp, updatedAt: timestamp },
+    { id: 'document-internal', libraryId: 'library-filter', title: '内部文档', mediaType: 'text/markdown', status: 'ready', tags: ['内部'], favorite: false, createdAt: timestamp, updatedAt: timestamp },
+  ])
+  vi.mocked(client.knowledgeSearch).mockResolvedValue({ results: [] })
+
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  expect(await screen.findByRole('heading', { name: '筛选测试库' })).toBeInTheDocument()
+  expect(await screen.findByText('产品文档')).toBeInTheDocument()
+  expect(screen.getByText('内部文档')).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: '筛选' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: '产品' }))
+
+  expect(screen.getByText('产品文档')).toBeInTheDocument()
+  expect(screen.queryByText('内部文档')).not.toBeInTheDocument()
+})
+
 test('places pending review details in the right pane and resizes it with the keyboard', async () => {
   const timestamp = new Date().toISOString()
   const pending: KAHSubmission = { id: 'submission-pending', libraryId: 'library-1', knowledgeUri: 'kah://knowledge/pending', revision: 1, mode: 'create', reviewStatus: 'pending_review', validation: { valid: true }, title: '待审核测试知识', summary: '用于验证右侧详情预览。', tags: ['测试'], provenance: { sources: [] }, clientSubmissionId: 'client-pending', markdown: '# 内容预览\n\n这里是待审核知识正文。', createdAt: timestamp, updatedAt: timestamp }
   const processed: KAHSubmission = { ...pending, id: 'submission-processed', knowledgeUri: 'kah://knowledge/processed', title: '已处理知识', reviewStatus: 'published', clientSubmissionId: 'client-processed' }
-  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-1', name: '测试知识库', description: '', allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-1', name: '测试知识库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }])
   vi.mocked(client.submissions).mockResolvedValue([pending, processed])
   vi.mocked(client.submission).mockResolvedValue(pending)
   window.localStorage.removeItem('kah.detail-pane-width')
@@ -150,9 +215,9 @@ test('shows the import pipeline while automatic summary is running', async () =>
 })
 
 test('exposes per-library automatic summary model controls', async () => {
-  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-1', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }])
+  vi.mocked(client.libraries).mockResolvedValue([{ id: 'library-1', name: '产品知识库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }])
   vi.mocked(client.providers).mockResolvedValue([{ id: 'provider-1', name: '本地总结模型', kind: 'lmstudio', baseUrl: 'http://127.0.0.1:1234', model: 'summary', embeddingModel: '', local: true }])
-  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><PrivacySettings libraries={[{ id: 'library-1', name: '产品知识库', description: '', allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]} /></QueryClientProvider>)
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><PrivacySettings libraries={[{ id: 'library-1', name: '产品知识库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: true, summaryProviderId: 'provider-1', autoReviewAgentSubmissions: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }]} /></QueryClientProvider>)
   expect(await screen.findByText('导入后自动总结')).toBeInTheDocument()
   expect(await screen.findByRole('option', { name: '本地总结模型 · 本地' })).toBeInTheDocument()
   expect(screen.getByRole('combobox', { name: '产品知识库总结模型' })).toHaveValue('provider-1')

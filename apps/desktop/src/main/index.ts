@@ -2,6 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
+import { copyFile, mkdtemp, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 
 const API_PORT = 48761
@@ -10,6 +11,7 @@ const BACKEND_RETRY_INTERVAL_MS = 250
 let backend: ChildProcess | undefined
 let mainWindow: BrowserWindow | undefined
 let isQuitting = false
+let backendMaintenance = false
 const desktopToken = `desktop_${randomBytes(32).toString('base64url')}`
 
 
@@ -102,11 +104,75 @@ function startBackend(): void {
   backend.stderr?.on('data', (value) => console.error(String(value).trim()))
   backend.on('error', (error) => {
     console.error('backend process failed to start', error)
-    if (!isQuitting) mainWindow?.webContents.send('runtime:backend-exit', null)
+    if (!isQuitting && !backendMaintenance) mainWindow?.webContents.send('runtime:backend-exit', null)
   })
   backend.on('exit', (code) => {
-    if (!isQuitting) mainWindow?.webContents.send('runtime:backend-exit', code)
+    if (!isQuitting && !backendMaintenance) mainWindow?.webContents.send('runtime:backend-exit', code)
   })
+}
+
+function backupCandidatePath(relativePath: string): string {
+  const normalized = path.normalize(relativePath)
+  if (path.isAbsolute(normalized) || normalized.startsWith(`..${path.sep}`) || !normalized.startsWith(`backups${path.sep}`) || !normalized.endsWith('.kahbackup')) throw new Error('备份路径必须位于受控 backups 目录')
+  const root = path.resolve(dataRoot())
+  const target = path.resolve(root, normalized)
+  if (!target.startsWith(root + path.sep)) throw new Error('备份路径越出数据目录')
+  return target
+}
+
+async function restoreBackup(relativePath: string): Promise<{ restarted: true }> {
+  const activeRoot = path.resolve(dataRoot())
+  const parent = path.dirname(activeRoot)
+  const archive = backupCandidatePath(relativePath)
+  // The renderer performs this preflight before showing confirmation, but the
+  // IPC handler is also a security boundary. Re-verify the candidate in the
+  // main process immediately before stopping the backend and extracting it.
+  const verification = await fetch(`http://127.0.0.1:${API_PORT}/api/v1/backups/verify`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${desktopToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: path.relative(activeRoot, archive).split(path.sep).join('/') })
+  })
+  if (!verification.ok) {
+    const detail = await verification.text().catch(() => '')
+    throw new Error(`备份预检失败（${verification.status}）：${detail || '文件校验未通过'}`)
+  }
+  const suffix = randomBytes(8).toString('hex')
+  const stage = await mkdtemp(path.join(parent, `.kah-restore-${suffix}-`))
+  const rollback = path.join(parent, `${path.basename(activeRoot)}.rollback-${suffix}`)
+  const failed = path.join(parent, `${path.basename(activeRoot)}.failed-${suffix}`)
+  backendMaintenance = true
+  stopBackend()
+  try {
+    execFileSync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xf', archive, '-C', stage], { windowsHide: true, stdio: 'pipe' })
+    const restoredRoot = path.join(stage, 'data')
+    if (!existsSync(path.join(restoredRoot, 'knowledge.db'))) throw new Error('备份预检失败：缺少 data/knowledge.db')
+    await rename(activeRoot, rollback)
+    try {
+      await rename(restoredRoot, activeRoot)
+      startBackend()
+      await waitForBackend()
+    } catch (error) {
+      stopBackend()
+      if (existsSync(activeRoot)) await rename(activeRoot, failed)
+      await rename(rollback, activeRoot)
+      startBackend()
+      await waitForBackend()
+      if (existsSync(failed)) await rm(failed, { recursive: true, force: true })
+      throw error
+    }
+    await rm(rollback, { recursive: true, force: true })
+    mainWindow?.webContents.reload()
+    return { restarted: true }
+  } catch (error) {
+    if (!backend && existsSync(activeRoot)) {
+      startBackend()
+      await waitForBackend()
+    }
+    throw error
+  } finally {
+    backendMaintenance = false
+    if (existsSync(stage)) await rm(stage, { recursive: true, force: true })
+  }
 }
 
 async function waitForBackend(): Promise<void> {
@@ -185,6 +251,16 @@ app.whenReady().then(async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     return result.canceled ? '' : (result.filePaths[0] ?? '')
   })
+  ipcMain.handle('backup:select-candidate', async () => {
+    const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Knowledge Agent Hub backup', extensions: ['kahbackup'] }] })
+    if (result.canceled || !result.filePaths[0]) return ''
+    const backupsRoot = path.join(dataRoot(), 'backups')
+    const name = `.restore-candidate-${randomBytes(8).toString('hex')}.kahbackup`
+    const destination = path.join(backupsRoot, name)
+    await copyFile(result.filePaths[0], destination)
+    return path.posix.join('backups', name)
+  })
+  ipcMain.handle('backup:restore', async (_event, relativePath: string) => restoreBackup(relativePath))
   ipcMain.handle('shell:open-path', async (_event, target: string) => shell.openPath(target))
   ipcMain.handle('shell:open-external', async (_event, target: string) => {
     const parsed = new URL(target)

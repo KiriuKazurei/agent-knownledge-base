@@ -73,7 +73,7 @@ paths:
     delete:
       operationId: deleteLibrary
       responses:
-        '204': {description: Deleted}
+        '204': {description: Moved to Trash; source watches are paused}
   /documents:
     get:
       operationId: listDocuments
@@ -129,7 +129,7 @@ paths:
           required: true
           schema: {type: string, format: uuid}
       responses:
-        '204': {description: Deleted}
+        '204': {description: Moved to Trash; the document is excluded from retrieval and indexing}
   /skills:
     get:
       operationId: listSkills
@@ -391,6 +391,9 @@ paths:
   /jobs:
     get:
       operationId: listJobs
+      parameters:
+        - {in: query, name: status, schema: {type: string, enum: [queued, running, cancellation_requested, completed, failed, cancelled]}}
+        - {in: query, name: kind, schema: {type: string}}
       responses:
         '200':
           description: Jobs
@@ -399,6 +402,22 @@ paths:
               schema:
                 type: array
                 items: {$ref: '#/components/schemas/Job'}
+  /jobs/{jobId}/cancel:
+    post:
+      operationId: cancelJob
+      parameters:
+        - {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200': {description: Queued job cancelled or cooperative cancellation requested}
+        '409': {description: Job cannot be cancelled in its current state}
+  /jobs/{jobId}/retry:
+    post:
+      operationId: retryJob
+      parameters:
+        - {in: path, name: jobId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: New job created with originJobId retaining the original record}
+        '409': {description: Only failed or cancelled jobs can be retried}
   /folders:
     get:
       operationId: listFolders
@@ -424,12 +443,68 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/VirtualFolder'}
   /folders/{folderId}:
+    patch:
+      operationId: updateFolder
+      parameters:
+        - {in: path, name: folderId, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 120}
+                parentId: {type: string}
+      responses:
+        '200': {description: Renamed or moved folder}
+        '400': {description: Cross-library parent or hierarchy cycle}
     delete:
       operationId: deleteFolder
       parameters:
         - {in: path, name: folderId, required: true, schema: {type: string}}
       responses:
-        '204': {description: Deleted}
+        '204': {description: Folder removed; document memberships are unassigned but documents are retained}
+  /documents/batch:
+    post:
+      operationId: batchDocuments
+      description: Transactional batch operation. Every document must exist and belong to one library, otherwise nothing is changed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DocumentBatchRequest'}
+      responses:
+        '200':
+          description: Batch applied atomically
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DocumentBatchResult'}
+        '400': {description: 'Invalid IDs, cross-library selection, or unsupported action'}
+  /documents/{documentId}/reindex:
+    post:
+      operationId: reindexDocument
+      parameters:
+        - {in: path, name: documentId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '202': {description: Reindex job queued}
+  /documents/{documentId}/relink:
+    post:
+      operationId: relinkDocumentSource
+      parameters:
+        - {in: path, name: documentId, required: true, schema: {type: string, format: uuid}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sourcePath]
+              properties:
+                sourcePath: {type: string}
+      responses:
+        '200': {description: Source relocated and document reparsed}
   /documents/{documentId}/folders/{folderId}:
     put:
       operationId: assignDocumentFolder
@@ -466,6 +541,21 @@ paths:
       responses:
         '202': {description: Scan queued}
   /sources/watches/{watchId}:
+    patch:
+      operationId: updateSourceWatch
+      parameters:
+        - {in: path, name: watchId, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: {type: boolean}
+                recursive: {type: boolean}
+      responses:
+        '200': {description: Watch pause/recursive settings updated}
     delete:
       operationId: deleteSourceWatch
       parameters:
@@ -514,6 +604,20 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/SavedSearch'}
   /saved-searches/{savedSearchId}:
+    patch:
+      operationId: updateSavedSearch
+      parameters:
+        - in: path
+          name: savedSearchId
+          required: true
+          schema: {type: string, format: uuid}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SavedSearch'}
+      responses:
+        '200': {description: 'Full query, view, filters, and sort updated'}
     delete:
       operationId: deleteSavedSearch
       parameters:
@@ -566,6 +670,17 @@ paths:
           content:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/KAHSubmission'}}
+    post:
+      operationId: createDesktopKnowledgeSubmission
+      description: Creates an immutable revision draft from the current stable revision. A stale baseRevision returns 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DesktopKnowledgeSubmissionRequest'}
+      responses:
+        '201': {description: Revision draft created}
+        '409': {description: Stable base revision changed or client idempotency ID conflicts}
   /knowledge/submissions/{submissionId}:
     parameters:
       - in: path
@@ -682,6 +797,46 @@ paths:
           content:
             application/json:
               schema: {type: object, required: [models], properties: {models: {type: array, items: {type: string}}}}
+  /providers/{providerId}:
+    delete:
+      operationId: deleteProvider
+      parameters:
+        - {in: path, name: providerId, required: true, schema: {type: string}}
+      responses:
+        '204': {description: Provider deleted}
+        '409': {description: Provider is referenced by one or more library automation settings}
+  /providers/{providerId}/test:
+    post:
+      operationId: testProvider
+      parameters:
+        - {in: path, name: providerId, required: true, schema: {type: string}}
+      responses:
+        '200': {description: Connection succeeded and available models returned}
+  /trash:
+    get:
+      operationId: listTrash
+      responses:
+        '200': {description: Trashed libraries and documents}
+    delete:
+      operationId: emptyTrash
+      responses:
+        '204': {description: All trashed records and unreferenced object files permanently removed}
+  /trash/{kind}/{id}/restore:
+    post:
+      operationId: restoreTrashItem
+      parameters:
+        - {in: path, name: kind, required: true, schema: {enum: [library, document]}}
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Restored; library source watches remain paused}
+  /trash/{kind}/{id}:
+    delete:
+      operationId: purgeTrashItem
+      parameters:
+        - {in: path, name: kind, required: true, schema: {enum: [library, document]}}
+        - {in: path, name: id, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '204': {description: Permanently removed after object reference check}
   /audit:
     get:
       operationId: listAudit
@@ -692,6 +847,14 @@ paths:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/AuditEntry'}}
   /backups:
+    get:
+      operationId: listBackups
+      responses:
+        '200':
+          description: Existing local backup artifacts, newest first
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/BackupRecord'}}
     post:
       operationId: createBackup
       requestBody:
@@ -707,6 +870,21 @@ paths:
           content:
             application/json:
               schema: {type: object, properties: {path: {type: string}, sha256: {type: string}}}
+  /backups/verify:
+    post:
+      operationId: verifyBackup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: {type: string}
+      responses:
+        '200': {description: Backup checksum and manifest are valid}
+        '400': {description: 'Backup is missing, corrupt, or incompatible'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
@@ -720,14 +898,21 @@ components:
         worker: {type: string}
     Library:
       type: object
-      required: [id, name, allowRemoteModels, autoReviewAgentSubmissions, createdAt, updatedAt]
+      required: [id, name, icon, color, tags, favorite, allowRemoteModels, autoSummarizeImports, autoReviewAgentSubmissions, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
         description: {type: string}
+        icon: {type: string, enum: [library, book-open, bot, folder, sparkles, database, archive, tag]}
+        color: {type: string, enum: [jade, blue, amber, violet, rose, slate]}
+        tags: {type: array, items: {type: string, maxLength: 60}, maxItems: 30}
+        favorite: {type: boolean}
         allowRemoteModels: {type: boolean}
+        autoSummarizeImports: {type: boolean}
+        summaryProviderId: {type: string, format: uuid}
         autoReviewAgentSubmissions: {type: boolean}
         reviewProviderId: {type: string, format: uuid}
+        deletedAt: {type: string, format: date-time}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
     CreateLibraryRequest:
@@ -741,7 +926,13 @@ components:
       properties:
         name: {type: string, minLength: 1, maxLength: 120}
         description: {type: string, maxLength: 1000}
+        icon: {type: string, enum: [library, book-open, bot, folder, sparkles, database, archive, tag]}
+        color: {type: string, enum: [jade, blue, amber, violet, rose, slate]}
+        tags: {type: array, items: {type: string, maxLength: 60}, maxItems: 30}
+        favorite: {type: boolean}
         allowRemoteModels: {type: boolean}
+        autoSummarizeImports: {type: boolean}
+        summaryProviderId: {type: string, format: uuid}
         autoReviewAgentSubmissions: {type: boolean}
         reviewProviderId: {type: string, format: uuid}
     Document:
@@ -759,7 +950,9 @@ components:
         status: {enum: [pending, pending_review, approved_pending_index, rejected, ready, failed, source_missing]}
         error: {type: string}
         tags: {type: array, items: {type: string}}
+        folderIds: {type: array, items: {type: string}}
         favorite: {type: boolean}
+        deletedAt: {type: string, format: date-time}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
     DocumentDetail:
@@ -953,13 +1146,32 @@ components:
         skillIds: {type: array, minItems: 1, items: {type: string, format: uuid}, uniqueItems: true}
     SavedSearch:
       type: object
-      required: [id, name, query, libraryIds, tags]
+      required: [id, name, query, view, libraryIds, tags, filters, sort]
       properties:
         id: {type: string, format: uuid}
         name: {type: string, minLength: 1, maxLength: 120}
         query: {type: string, minLength: 1, maxLength: 8000}
+        view: {enum: [sources, knowledge]}
         libraryIds: {type: array, items: {type: string, format: uuid}}
         tags: {type: array, items: {type: string}}
+        filters:
+          type: object
+          required: [tags, tagMode, favorite]
+          properties:
+            tags: {type: array, items: {type: string}}
+            tagMode: {enum: [all, any]}
+            favorite: {type: boolean}
+            folderIds: {type: array, items: {type: string, format: uuid}}
+            statuses: {type: array, items: {type: string}}
+            mediaTypes: {type: array, items: {type: string}}
+            sourceKinds: {type: array, items: {type: string}}
+            favoritesOnly: {type: boolean, deprecated: true}
+        sort:
+          type: object
+          required: [field, direction]
+          properties:
+            field: {type: string}
+            direction: {enum: [asc, desc]}
     VirtualFolder:
       type: object
       required: [id, libraryId, name, createdAt, updatedAt]
@@ -1020,15 +1232,52 @@ components:
         files: {type: array, items: {$ref: '#/components/schemas/SkillFile'}}
     Job:
       type: object
-      required: [id, kind, status, progress, createdAt, updatedAt]
+      required: [id, kind, status, progress, canCancel, canRetry, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         kind: {type: string}
-        status: {enum: [queued, running, completed, failed, cancelled]}
+        status: {enum: [queued, running, cancellation_requested, completed, failed, cancelled]}
         progress: {type: number, minimum: 0, maximum: 1}
         message: {type: string}
+        originJobId: {type: string, format: uuid}
+        canCancel: {type: boolean}
+        canRetry: {type: boolean}
         createdAt: {type: string, format: date-time}
         updatedAt: {type: string, format: date-time}
+    DocumentBatchRequest:
+      type: object
+      required: [documentIds, action]
+      properties:
+        documentIds: {type: array, minItems: 1, maxItems: 1000, uniqueItems: true, items: {type: string, format: uuid}}
+        action: {enum: [favorite, add_tags, remove_tags, add_folders, remove_folders, trash, reindex]}
+        tags: {type: array, items: {type: string}}
+        folderIds: {type: array, items: {type: string}}
+        favorite: {type: boolean}
+    DocumentBatchResult:
+      type: object
+      required: [libraryId, documentIds, updatedCount]
+      properties:
+        libraryId: {type: string, format: uuid}
+        documentIds: {type: array, items: {type: string, format: uuid}}
+        updatedCount: {type: integer, minimum: 0}
+        jobIds: {type: array, items: {type: string, format: uuid}}
+    DesktopKnowledgeSubmissionRequest:
+      type: object
+      required: [libraryId, mode, knowledgeUri, baseRevision, clientSubmissionId, payload]
+      properties:
+        libraryId: {type: string, format: uuid}
+        mode: {enum: [create, propose_revision]}
+        knowledgeUri: {type: string, format: uri}
+        baseRevision: {type: integer, minimum: 0}
+        clientSubmissionId: {type: string, minLength: 1}
+        payload: {type: object, additionalProperties: true}
+    BackupRecord:
+      type: object
+      required: [path, size, createdAt]
+      properties:
+        path: {type: string}
+        size: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
     ReviewDecisionRequest:
       type: object
       properties:

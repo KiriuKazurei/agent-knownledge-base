@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CircleAlert, FolderSearch2, Link2, LoaderCircle, Plus, RefreshCw, Trash2, Wrench, X } from 'lucide-react'
+import { CircleAlert, FolderSearch2, Link2, LoaderCircle, Plus, RefreshCw, Save, Trash2, Wrench, X } from 'lucide-react'
 import { client } from './api'
 import type { Skill, SkillMapping, SkillMappingTarget } from './types'
 
@@ -72,39 +72,61 @@ export function SkillMappingsWorkspace({ skills, selectedTargetId, onTargetSelec
       {formError && <div ref={formErrorRef} tabIndex={-1} role="alert" className="inline-error"><CircleAlert size={17}/>{formError}</div>}
       <div className="preview-actions"><button type="submit" className="button primary" disabled={create.isPending || !directoryPath}><Link2 size={16}/>{create.isPending ? '正在创建链接…' : '创建映射'}</button><button type="button" className="button ghost" onClick={() => setFormOpen(false)}>取消</button></div>
     </form>}
-    <div className="content-heading"><div><h2>外部映射目标</h2><span>{targets.data?.length ?? 0} 个目标</span></div><button className="button secondary" onClick={() => setFormOpen(true)}><Plus size={16}/>新建映射</button></div>
+    <div className="content-heading"><div><h2>外部映射目标</h2><span>{targets.data?.length ?? 0} 个目标</span></div><button type="button" className="button secondary" onClick={() => setFormOpen(true)}><Plus size={16}/>新建映射</button></div>
     {targets.error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{(targets.error as Error).message}</div>}
     <section className="result-list" aria-live="polite" aria-label="外部映射目标列表">
       {targets.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入外部映射</div>}
-      {targets.data?.map((target) => <button className={`document-row ${selectedTargetId === target.id ? 'active' : ''}`} key={target.id} onClick={() => onTargetSelect(target.id)}><span className="file-icon"><Link2 size={19}/></span><span className="document-copy"><strong>{target.name}</strong><small>{target.kind === 'agent' ? 'Agent' : '项目'} · {target.directoryPath}</small></span><span className={`status-pill ${target.status}`}>{targetStatusLabel(target.status)}</span><span className="mapping-count">{target.mappings.length} 个 Skill</span></button>)}
+      {targets.data?.map((target) => <button type="button" className={`document-row ${selectedTargetId === target.id ? 'active' : ''}`} key={target.id} onClick={() => onTargetSelect(target.id)}><span className="file-icon"><Link2 size={19}/></span><span className="document-copy"><strong>{target.name}</strong><small>{target.kind === 'agent' ? 'Agent' : '项目'} · {target.directoryPath}</small></span><span className={`status-pill ${target.status}`}>{targetStatusLabel(target.status)}</span><span className="mapping-count">{target.mappings.length} 个 Skill</span></button>)}
       {!targets.isLoading && !targets.data?.length && <EmptyMappingTargets onCreate={() => setFormOpen(true)} />}
     </section>
   </>
 }
 
 function EmptyMappingTargets({ onCreate }: { onCreate: () => void }) {
-  return <div className="empty"><div className="empty-icon"><Link2 size={25}/></div><strong>还没有外部映射</strong><p>选择一个现有 Agent 或项目 Skills 目录，让它直接发现全局 Skill。</p><button className="button secondary" onClick={onCreate}><Plus size={15}/>新建映射</button></div>
+  return <div className="empty"><div className="empty-icon"><Link2 size={25}/></div><strong>还没有外部映射</strong><p>选择一个现有 Agent 或项目 Skills 目录，让它直接发现全局 Skill。</p><button type="button" className="button secondary" onClick={onCreate}><Plus size={15}/>新建映射</button></div>
 }
 
 export function SkillMappingDetailPane({ targetId, onDeleted }: { targetId: string; onDeleted: () => void }) {
   const queryClient = useQueryClient()
   const target = useQuery({ queryKey: ['skill-mapping-target', targetId], queryFn: () => client.skillMappingTarget(targetId), enabled: Boolean(targetId) })
+  const skills = useQuery({ queryKey: ['skills'], queryFn: client.skills })
   const refresh = () => { queryClient.invalidateQueries({ queryKey: ['skill-mapping-targets'] }); queryClient.invalidateQueries({ queryKey: ['skill-mapping-target', targetId] }) }
   const verify = useMutation({ mutationFn: () => client.verifySkillMappingTarget(targetId), onSuccess: refresh })
   const repair = useMutation({ mutationFn: (skillId: string) => client.repairSkillMapping(targetId, skillId), onSuccess: refresh })
   const remove = useMutation({ mutationFn: (skillId: string) => client.removeSkillMapping(targetId, skillId), onSuccess: refresh })
   const forget = useMutation({ mutationFn: (skillId: string) => client.forgetSkillMapping(targetId, skillId), onSuccess: refresh })
   const deleteTarget = useMutation({ mutationFn: () => client.deleteSkillMappingTarget(targetId), onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['skill-mapping-targets'] }); onDeleted() } })
+  const [openError, setOpenError] = useState('')
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState('')
+  const [kind, setKind] = useState<'agent'|'project'>('agent')
+  const [addIds, setAddIds] = useState<string[]>([])
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const updateTarget = useMutation({ mutationFn: () => client.updateSkillMappingTarget(targetId, { name: name.trim(), kind }), onSuccess: () => { setEditing(false); refresh() } })
+  const addMappings = useMutation({ mutationFn: () => client.addSkillMappings(targetId, addIds), onSuccess: () => { setAddIds([]); refresh() } })
+  const removeSelected = useMutation({ mutationFn: async () => { for (const skillId of selectedIds) await client.removeSkillMapping(targetId, skillId) }, onSuccess: () => { setSelectedIds([]); refresh() } })
+  useEffect(() => { if (target.data) { setName(target.data.name); setKind(target.data.kind) } }, [target.data?.id, target.data?.name, target.data?.kind])
   if (!targetId) return <EmptyMappingDetail />
   if (target.error) return <div role="alert" className="inline-error"><CircleAlert size={17}/>{(target.error as Error).message}</div>
   if (target.isLoading || !target.data) return <div className="preview-loading"><LoaderCircle className="spin"/>正在载入映射详情</div>
-  const error = verify.error || repair.error || remove.error || forget.error || deleteTarget.error
-  return <div className="preview-shell mapping-detail-shell"><header className="preview-header"><div className="preview-icon"><Link2 size={20}/></div><div><span>{target.data.kind === 'agent' ? 'Agent 映射' : '项目映射'}</span><h2>{target.data.name}</h2></div></header><div className="preview-meta"><span className={`status-pill ${target.data.status}`}>{targetStatusLabel(target.data.status)}</span><span><Link2 size={14}/>{target.data.mappings.length} 个链接</span></div><div className="mapping-path-card"><strong>目标 Skills 目录</strong><code>{target.data.directoryPath}</code></div>{target.data.error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{target.data.error}</div>}{error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{(error as Error).message}</div>}<div className="preview-actions"><button className="button primary" onClick={() => verify.mutate()} disabled={verify.isPending}><RefreshCw size={16}/>{verify.isPending ? '正在验证…' : '验证链接'}</button><button className="button ghost" onClick={() => window.kah.openPath(target.data!.directoryPath)}><FolderSearch2 size={16}/>打开目录</button><button className="button danger" onClick={() => { if (window.confirm(`确定删除映射目标“${target.data!.name}”？系统会只清理仍确认归属的链接。`)) deleteTarget.mutate() }} disabled={deleteTarget.isPending}><Trash2 size={16}/>删除目标</button></div><div className="mapping-list"><h3>已映射 Skill</h3>{target.data.mappings.length ? target.data.mappings.map((mapping) => <MappingRow key={mapping.skillId} mapping={mapping} onRepair={() => repair.mutate(mapping.skillId)} onRemove={() => { if (window.confirm(`解除 ${mapping.skillName} 的外部链接？`)) remove.mutate(mapping.skillId) }} onForget={() => { if (window.confirm(`只遗忘 ${mapping.skillName} 的映射记录，不触碰外部对象？`)) forget.mutate(mapping.skillId) }} busy={repair.isPending || remove.isPending || forget.isPending}/>) : <p className="muted">此目标还没有映射 Skill。</p>}</div><div className="mapping-detail-note" role="status" aria-live="polite">最后校验：{target.data.lastVerifiedAt ? new Date(target.data.lastVerifiedAt).toLocaleString() : '尚未校验'}</div></div>
+  const error = verify.error || repair.error || remove.error || forget.error || deleteTarget.error || updateTarget.error || addMappings.error || removeSelected.error
+  async function openTargetDirectory() {
+    setOpenError('')
+    try {
+      const result = await window.kah.openPath(target.data!.directoryPath)
+      if (result) setOpenError(result)
+    } catch (value) {
+      setOpenError(value instanceof Error ? value.message : String(value))
+    }
+  }
+  const mapped = new Set(target.data.mappings.map((item) => item.skillId))
+  const available = (skills.data ?? []).filter((skill) => !mapped.has(skill.id))
+  return <div className="preview-shell mapping-detail-shell"><header className="preview-header"><div className="preview-icon"><Link2 size={20}/></div><div><span>{target.data.kind === 'agent' ? 'Agent 映射' : '项目映射'}</span><h2>{target.data.name}</h2></div><button type="button" className="button ghost" onClick={() => setEditing((value) => !value)}>编辑目标</button></header>{editing && <div className="mapping-edit-target"><label>名称<input value={name} onChange={(event) => setName(event.target.value)}/></label><label>类型<select value={kind} onChange={(event) => setKind(event.target.value as 'agent'|'project')}><option value="agent">Agent</option><option value="project">项目</option></select></label><button type="button" className="button primary" onClick={() => updateTarget.mutate()} disabled={!name.trim() || updateTarget.isPending}><Save size={15}/>保存</button></div>}<div className="preview-meta"><span className={`status-pill ${target.data.status}`}>{targetStatusLabel(target.data.status)}</span><span><Link2 size={14}/>{target.data.mappings.length} 个链接</span></div><div className="mapping-path-card"><strong>目标 Skills 目录</strong><code>{target.data.directoryPath}</code></div>{target.data.error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{target.data.error}</div>}{(error || openError) && <div role="alert" className="inline-error"><CircleAlert size={17}/>{openError || (error as Error).message}</div>}<div className="preview-actions"><button type="button" className="button primary" onClick={() => verify.mutate()} disabled={verify.isPending}><RefreshCw size={16}/>{verify.isPending ? '正在验证…' : '验证链接'}</button><button type="button" className="button ghost" onClick={() => void openTargetDirectory()}><FolderSearch2 size={16}/>打开目录</button><button type="button" className="button danger" onClick={() => { if (window.confirm(`确定删除映射目标“${target.data!.name}”？系统会只清理仍确认归属的链接。`)) deleteTarget.mutate() }} disabled={deleteTarget.isPending}><Trash2 size={16}/>{deleteTarget.isPending ? '正在删除…' : '删除目标'}</button></div>{available.length > 0 && <fieldset className="mapping-add-skills"><legend>追加 Skill</legend>{available.map((skill) => <label key={skill.id}><input type="checkbox" checked={addIds.includes(skill.id)} onChange={(event) => setAddIds((current) => event.target.checked ? [...current, skill.id] : current.filter((id) => id !== skill.id))}/>{skill.name}</label>)}<button type="button" className="button secondary" onClick={() => addMappings.mutate()} disabled={!addIds.length || addMappings.isPending}><Plus size={15}/>添加所选</button></fieldset>}<div className="mapping-list"><div className="mapping-list-heading"><h3>已映射 Skill</h3><button type="button" className="button ghost" disabled={!selectedIds.length || removeSelected.isPending} onClick={() => { if (window.confirm(`解除所选 ${selectedIds.length} 个 Skill 映射？`)) removeSelected.mutate() }}><Trash2 size={15}/>批量解除</button></div>{target.data.mappings.length ? target.data.mappings.map((mapping) => <div className="mapping-select-row" key={mapping.skillId}><input type="checkbox" aria-label={`选择 ${mapping.skillName}`} checked={selectedIds.includes(mapping.skillId)} onChange={(event) => setSelectedIds((current) => event.target.checked ? [...current, mapping.skillId] : current.filter((id) => id !== mapping.skillId))}/><MappingRow mapping={mapping} onRepair={() => repair.mutate(mapping.skillId)} onRemove={() => { if (window.confirm(`解除 ${mapping.skillName} 的外部链接？`)) remove.mutate(mapping.skillId) }} onForget={() => { if (window.confirm(`只遗忘 ${mapping.skillName} 的映射记录，不触碰外部对象？`)) forget.mutate(mapping.skillId) }} busy={repair.isPending || remove.isPending || forget.isPending}/></div>) : <p className="muted">此目标还没有映射 Skill。</p>}</div><div className="mapping-detail-note" role="status" aria-live="polite">最后校验：{target.data.lastVerifiedAt ? new Date(target.data.lastVerifiedAt).toLocaleString() : '尚未校验'}</div></div>
 }
 
 function MappingRow({ mapping, onRepair, onRemove, onForget, busy }: { mapping: SkillMapping; onRepair: () => void; onRemove: () => void; onForget: () => void; busy: boolean }) {
   const conflict = mapping.status === 'conflict' || mapping.status === 'invalid'
-  return <article className="mapping-row"><div className="mapping-row-heading"><div><strong>{mapping.skillName}</strong><span className={`status-pill ${mapping.status}`}>{mappingStatusLabel(mapping.status)}</span></div><span className="mapping-link-name">{mapping.linkName}</span></div><dl><div><dt>源目录</dt><dd><code>{mapping.sourcePath}</code></dd></div><div><dt>外部链接</dt><dd><code>{mapping.linkPath}</code></dd></div></dl>{mapping.error && <p className="form-error" role="alert">{mapping.error}</p>}<div className="mapping-row-actions">{mapping.status === 'missing' && <button className="button secondary" onClick={onRepair} disabled={busy}><Wrench size={15}/>修复链接</button>}{conflict && <button className="button ghost" onClick={onForget} disabled={busy}>遗忘记录</button>}<button className="button ghost" onClick={onRemove} disabled={busy || conflict}><Trash2 size={15}/>解除映射</button></div></article>
+  return <article className="mapping-row"><div className="mapping-row-heading"><div><strong>{mapping.skillName}</strong><span className={`status-pill ${mapping.status}`}>{mappingStatusLabel(mapping.status)}</span></div><span className="mapping-link-name">{mapping.linkName}</span></div><dl><div><dt>源目录</dt><dd><code>{mapping.sourcePath}</code></dd></div><div><dt>外部链接</dt><dd><code>{mapping.linkPath}</code></dd></div></dl>{mapping.error && <p className="form-error" role="alert">{mapping.error}</p>}<div className="mapping-row-actions">{mapping.status === 'missing' && <button type="button" className="button secondary" onClick={onRepair} disabled={busy}><Wrench size={15}/>修复链接</button>}{conflict && <button type="button" className="button ghost" onClick={onForget} disabled={busy}>遗忘记录</button>}<button type="button" className="button ghost" onClick={onRemove} disabled={busy || conflict}><Trash2 size={15}/>解除映射</button></div></article>
 }
 
 function EmptyMappingDetail() {

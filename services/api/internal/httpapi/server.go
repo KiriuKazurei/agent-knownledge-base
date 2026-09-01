@@ -83,6 +83,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/skills/:id/files/*path", s.skillFile)
 	admin.POST("/knowledge/search", s.desktopKnowledgeSearch)
 	admin.GET("/knowledge/resolve", s.desktopKnowledgeGet)
+	admin.POST("/knowledge/submissions", s.createDesktopKnowledgeSubmission)
 	admin.GET("/knowledge/submissions", s.listKAHSubmissions)
 	admin.GET("/knowledge/submissions/:id", s.getKAHSubmission)
 	admin.POST("/knowledge/submissions/:id/approve", s.approveKAHSubmission)
@@ -94,14 +95,19 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/documents", s.listDocuments)
 	admin.GET("/documents/:id", s.getDocument)
 	admin.PATCH("/documents/:id", s.updateDocument)
+	admin.POST("/documents/batch", s.batchDocuments)
+	admin.POST("/documents/:id/reindex", s.reindexDocument)
+	admin.POST("/documents/:id/relink", s.relinkDocument)
 	admin.GET("/folders", s.listFolders)
 	admin.POST("/folders", s.createFolder)
+	admin.PATCH("/folders/:id", s.updateFolder)
 	admin.DELETE("/folders/:id", s.deleteFolder)
 	admin.PUT("/documents/:id/folders/:folderId", s.assignDocumentFolder)
 	admin.DELETE("/documents/:id/folders/:folderId", s.removeDocumentFolder)
 	admin.GET("/sources/watches", s.listSourceWatches)
 	admin.POST("/sources/watches", s.createSourceWatch)
 	admin.POST("/sources/watches/:id/scan", s.scanSourceWatch)
+	admin.PATCH("/sources/watches/:id", s.updateSourceWatch)
 	admin.DELETE("/sources/watches/:id", s.deleteSourceWatch)
 	admin.DELETE("/documents/:id", s.deleteDocument)
 	admin.GET("/skills", s.listSkills)
@@ -121,8 +127,11 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/imports/files", s.importFiles)
 	admin.POST("/imports/url", s.importURL)
 	admin.GET("/jobs", s.listJobs)
+	admin.POST("/jobs/:id/cancel", s.cancelJob)
+	admin.POST("/jobs/:id/retry", s.retryJob)
 	admin.GET("/saved-searches", s.listSavedSearches)
 	admin.POST("/saved-searches", s.createSavedSearch)
+	admin.PATCH("/saved-searches/:id", s.updateSavedSearch)
 	admin.DELETE("/saved-searches/:id", s.deleteSavedSearch)
 	admin.GET("/tokens", s.listTokens)
 	admin.POST("/tokens", s.createToken)
@@ -130,8 +139,16 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/providers", s.listProviders)
 	admin.POST("/providers", s.saveProvider)
 	admin.GET("/providers/:id/models", s.listProviderModels)
+	admin.POST("/providers/:id/test", s.testProvider)
+	admin.DELETE("/providers/:id", s.deleteProvider)
+	admin.GET("/trash", s.listTrash)
+	admin.POST("/trash/:kind/:id/restore", s.restoreTrash)
+	admin.DELETE("/trash/:kind/:id", s.purgeTrash)
+	admin.DELETE("/trash", s.emptyTrash)
 	admin.GET("/audit", s.listAudit)
+	admin.GET("/backups", s.listBackups)
 	admin.POST("/backups", s.createBackup)
+	admin.POST("/backups/verify", s.verifyBackup)
 	admin.POST("/indexes/rebuild", s.rebuildIndex)
 	return router
 }
@@ -273,13 +290,17 @@ func (s *Server) createLibrary(c *gin.Context) {
 }
 func (s *Server) updateLibrary(c *gin.Context) {
 	var input struct {
-		Name                       *string `json:"name"`
-		Description                *string `json:"description"`
-		AllowRemoteModels          *bool   `json:"allowRemoteModels"`
-		AutoSummarizeImports       *bool   `json:"autoSummarizeImports"`
-		SummaryProviderID          *string `json:"summaryProviderId"`
-		AutoReviewAgentSubmissions *bool   `json:"autoReviewAgentSubmissions"`
-		ReviewProviderID           *string `json:"reviewProviderId"`
+		Name                       *string   `json:"name"`
+		Description                *string   `json:"description"`
+		Icon                       *string   `json:"icon"`
+		Color                      *string   `json:"color"`
+		Tags                       *[]string `json:"tags"`
+		Favorite                   *bool     `json:"favorite"`
+		AllowRemoteModels          *bool     `json:"allowRemoteModels"`
+		AutoSummarizeImports       *bool     `json:"autoSummarizeImports"`
+		SummaryProviderID          *string   `json:"summaryProviderId"`
+		AutoReviewAgentSubmissions *bool     `json:"autoReviewAgentSubmissions"`
+		ReviewProviderID           *string   `json:"reviewProviderId"`
 	}
 	if !bind(c, &input) {
 		return
@@ -351,19 +372,40 @@ func (s *Server) updateLibrary(c *gin.Context) {
 			return
 		}
 	}
-	item, err := s.Store.UpdateLibrary(operationContext(c), c.Param("id"), input.Name, input.Description, input.AllowRemoteModels, input.AutoSummarizeImports, input.AutoReviewAgentSubmissions, input.SummaryProviderID, input.ReviewProviderID)
+	item, err := s.Store.UpdateLibraryPatch(operationContext(c), c.Param("id"), storage.LibraryPatch{
+		Name: input.Name, Description: input.Description, Icon: input.Icon, Color: input.Color, Tags: input.Tags, Favorite: input.Favorite,
+		AllowRemoteModels: input.AllowRemoteModels, AutoSummarizeImports: input.AutoSummarizeImports,
+		AutoReviewAgentSubmissions: input.AutoReviewAgentSubmissions, SummaryProviderID: input.SummaryProviderID, ReviewProviderID: input.ReviewProviderID,
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, 404, "library_not_found", "Library not found", false)
 		return
 	}
 	if err != nil {
+		if strings.HasPrefix(err.Error(), "library ") {
+			s.problem(c, 400, "library_update_failed", err.Error(), false)
+			return
+		}
 		s.problem(c, 500, "database_error", err.Error(), true)
 		return
 	}
-	_ = s.Store.AddAudit(operationContext(c), actorName(c), "library_updated", item.ID, map[string]any{"allowRemoteModels": item.AllowRemoteModels})
+	_ = s.Store.AddAudit(operationContext(c), actorName(c), "library_updated", item.ID, map[string]any{
+		"name":                 item.Name,
+		"icon":                 item.Icon,
+		"color":                item.Color,
+		"tags":                 item.Tags,
+		"favorite":             item.Favorite,
+		"allowRemoteModels":    item.AllowRemoteModels,
+		"autoSummarizeImports": item.AutoSummarizeImports,
+	})
 	c.JSON(200, item)
 }
 func (s *Server) deleteLibrary(c *gin.Context) {
+	documents, listErr := s.Store.ListDocumentsFiltered(operationContext(c), c.Param("id"), "", false)
+	if listErr != nil {
+		s.problem(c, 500, "database_error", listErr.Error(), true)
+		return
+	}
 	err := s.Store.DeleteLibrary(operationContext(c), c.Param("id"))
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, 404, "library_not_found", "Library not found", false)
@@ -373,6 +415,14 @@ func (s *Server) deleteLibrary(c *gin.Context) {
 		s.problem(c, 500, "database_error", err.Error(), true)
 		return
 	}
+	if s.Worker != nil {
+		for _, document := range documents {
+			if workerErr := s.Worker.Call(operationContext(c), "index_delete", map[string]any{"libraryId": document.LibraryID, "documentId": document.ID}, nil); workerErr != nil && s.Logger != nil {
+				s.Logger.Warn("failed to remove trashed library document from index", "documentId", document.ID, "error", workerErr)
+			}
+		}
+	}
+	_ = s.Store.AddAudit(operationContext(c), actorName(c), "library_trashed", c.Param("id"), nil)
 	c.Status(204)
 }
 func (s *Server) listDocuments(c *gin.Context) {
@@ -476,6 +526,15 @@ func (s *Server) updateDocument(c *gin.Context) {
 	c.JSON(200, item)
 }
 func (s *Server) deleteDocument(c *gin.Context) {
+	detail, detailErr := s.Store.GetDocument(operationContext(c), c.Param("id"))
+	if errors.Is(detailErr, sql.ErrNoRows) {
+		s.problem(c, 404, "document_not_found", "Document not found", false)
+		return
+	}
+	if detailErr != nil {
+		s.problem(c, 500, "database_error", detailErr.Error(), true)
+		return
+	}
 	err := s.Store.DeleteDocument(operationContext(c), c.Param("id"))
 	if errors.Is(err, sql.ErrNoRows) {
 		s.problem(c, 404, "document_not_found", "Document not found", false)
@@ -485,6 +544,12 @@ func (s *Server) deleteDocument(c *gin.Context) {
 		s.problem(c, 500, "database_error", err.Error(), true)
 		return
 	}
+	if s.Worker != nil {
+		if workerErr := s.Worker.Call(operationContext(c), "index_delete", map[string]any{"libraryId": detail.LibraryID, "documentId": detail.ID}, nil); workerErr != nil && s.Logger != nil {
+			s.Logger.Warn("failed to remove trashed document from index", "documentId", detail.ID, "error", workerErr)
+		}
+	}
+	_ = s.Store.AddAudit(operationContext(c), actorName(c), "document_trashed", detail.ID, nil)
 	c.Status(204)
 }
 
@@ -536,12 +601,17 @@ func (s *Server) runSkillImport(jobID, source string, replace bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Validating Skill package")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	item, err := s.Store.ImportSkill(ctx, source, replace)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
 		return
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported Skill "+item.Name)
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported Skill "+item.Name)
+	}
 }
 
 func (s *Server) updateSkillLinks(c *gin.Context) {
@@ -756,9 +826,15 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 	ctx, cancel := context.WithTimeout(parent, 10*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Copying source")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	relative, digest, err := s.putFileWithRetry(ctx, path)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	if handled, syncErr := s.syncExistingSourceFile(ctx, jobID, libraryID, path, relative, digest); handled {
@@ -802,6 +878,9 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 		s.failJob(ctx, jobID, err)
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.35, "Extracting document")
 	resolved, err := s.Store.Resolve(relative)
 	if err != nil {
@@ -818,12 +897,18 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 		s.failJob(ctx, jobID, err)
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	if s.Worker != nil {
 		if err := s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": libraryID, "documentId": doc.ID, "chunks": chunks}, nil); err != nil {
 			_ = s.Store.FailDocument(ctx, doc.ID, err)
 			s.failJob(ctx, jobID, err)
 			return
 		}
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
 	}
 	summaryJob, summaryQueued, referenceCreated, processingErr := s.queueImportedKnowledgeProcessing(ctx, doc.ID)
 	if processingErr != nil {
@@ -838,7 +923,9 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 	} else {
 		message += "; no KAH processing was queued"
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	}
 }
 
 const importedReferenceMaxRunes = 64_000
@@ -1086,7 +1173,7 @@ func (s *Server) runURLImport(jobID, libraryID, target string, maxDepth, maxPage
 	s.runURLImportControlled(jobID, libraryID, target, maxDepth, maxPages)
 }
 func (s *Server) listJobs(c *gin.Context) {
-	items, err := s.Store.ListJobs(c)
+	items, err := s.Store.ListJobsFiltered(operationContext(c), c.Query("status"), c.Query("kind"))
 	if err != nil {
 		s.problem(c, 500, "database_error", err.Error(), true)
 		return
@@ -1112,7 +1199,7 @@ func (s *Server) createSavedSearch(c *gin.Context) {
 		s.problem(c, http.StatusBadRequest, "invalid_saved_search", "name or query is too long", false)
 		return
 	}
-	item, err := s.Store.CreateSavedSearch(operationContext(c), input.Name, input.Query, input.LibraryIDs, input.Tags)
+	item, err := s.Store.CreateSavedSearch(operationContext(c), input)
 	if err != nil {
 		s.problem(c, http.StatusBadRequest, "invalid_saved_search", err.Error(), false)
 		return
@@ -1594,6 +1681,15 @@ func (s *Server) createBackup(c *gin.Context) {
 	}
 	_ = s.Store.AddAudit(operationContext(c), actorName(c), "backup_created", path, map[string]any{"includeIndexes": include, "sha256": digest})
 	c.JSON(201, gin.H{"path": path, "sha256": digest})
+}
+
+func (s *Server) listBackups(c *gin.Context) {
+	items, err := s.Store.ListBackups(operationContext(c))
+	if err != nil {
+		s.problem(c, http.StatusInternalServerError, "backup_list_failed", err.Error(), true)
+		return
+	}
+	c.JSON(http.StatusOK, items)
 }
 
 func operationContext(c *gin.Context) context.Context {

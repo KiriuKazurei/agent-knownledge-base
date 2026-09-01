@@ -594,6 +594,9 @@ func (s *Server) runKnowledgeReview(jobID, submissionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Loading submission and review policy")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	claimed, err := s.Store.MarkSubmissionReviewing(ctx, submissionID)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -607,6 +610,9 @@ func (s *Server) runKnowledgeReview(jobID, submissionID string) {
 	if err != nil {
 		_ = s.Store.SetSubmissionReviewError(ctx, submissionID, err)
 		s.failJob(ctx, jobID, err)
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	library, ok, err := s.findLibrary(ctx, item.LibraryID)
@@ -644,6 +650,9 @@ func (s *Server) runKnowledgeReview(jobID, submissionID string) {
 		return
 	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.45, "Calling configured review model")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	raw, err := s.Providers.Review(ctx, provider, key, item.Markdown, evidence)
 	if err != nil {
 		_ = s.Store.SetSubmissionReviewError(ctx, submissionID, err)
@@ -667,6 +676,9 @@ func (s *Server) runKnowledgeReview(jobID, submissionID string) {
 	if output.Decision == "approve" && (output.Confidence < 0.85 || hasBlockingReviewIssue(output.Issues)) {
 		output.Decision = "needs_human"
 		output.Reason = "Model confidence or issue severity requires human review: " + output.Reason
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
 	}
 	changed, err := s.Store.RecordSubmissionReview(ctx, submissionID, "model", provider.ID, output.Decision, output.Confidence, output.Reason, issues)
 	if err != nil {
@@ -702,6 +714,9 @@ func (s *Server) runKnowledgePublish(jobID, submissionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.2, "Publishing approved knowledge")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	item, _, err := s.Store.GetKnowledgeSubmission(ctx, submissionID, false)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -726,6 +741,9 @@ func (s *Server) runKnowledgePublish(jobID, submissionID string) {
 	if err := s.Worker.Call(ctx, "index_upsert", map[string]any{"libraryId": detail.LibraryID, "documentId": detail.ID, "chunks": detail.Preview}, nil); err != nil {
 		_ = s.Store.SetSubmissionPublishError(ctx, submissionID, err)
 		s.failJob(ctx, jobID, err)
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	published, err := s.Store.MarkSubmissionPublished(ctx, submissionID)

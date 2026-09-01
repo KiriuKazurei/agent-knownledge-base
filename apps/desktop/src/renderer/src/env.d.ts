@@ -5,6 +5,8 @@ interface Window {
     setTitleBarTheme(theme: 'light' | 'dark'): Promise<void>
     selectFiles(kind?: string): Promise<string[]>
     selectDirectory(): Promise<string>
+    selectBackupCandidate(): Promise<string>
+    restoreBackup(path: string): Promise<{ restarted: true }>
     openPath(path: string): Promise<string>
     openExternal(url: string): Promise<void>
     onBackendExit(callback: (code: number | null) => void): () => void

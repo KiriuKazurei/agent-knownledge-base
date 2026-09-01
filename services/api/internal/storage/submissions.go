@@ -111,7 +111,7 @@ func (s *Store) CreateKnowledgeSubmission(ctx context.Context, input SubmissionC
 		return model.KnowledgeSubmission{}, false, err
 	}
 	var duplicateID, duplicateStatus string
-	err = tx.QueryRowContext(ctx, `SELECT id,status FROM documents WHERE library_id=? AND content_hash=? LIMIT 1`, input.LibraryID, input.Document.ContentHash).Scan(&duplicateID, &duplicateStatus)
+	err = tx.QueryRowContext(ctx, `SELECT d.id,d.status FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.library_id=? AND d.content_hash=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL LIMIT 1`, input.LibraryID, input.Document.ContentHash).Scan(&duplicateID, &duplicateStatus)
 	if err == nil {
 		return model.KnowledgeSubmission{}, false, fmt.Errorf("%w: document %s is %s", ErrSubmissionDuplicate, duplicateID, duplicateStatus)
 	}
@@ -198,10 +198,10 @@ func scanSubmission(row interface{ Scan(...any) error }) (submissionScan, error)
 	return item, nil
 }
 
-const submissionSelect = `SELECT s.id,s.document_id,s.library_id,s.submitted_by_token_id,s.client_submission_id,s.formatter_skill_id,s.formatter_skill_hash,s.supersedes_submission_id,s.review_status,s.review_job_id,s.review_error,s.summary,s.tags_json,s.provenance_json,s.submitted_at,s.updated_at,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.favorite,d.created_at,d.updated_at FROM knowledge_submissions s JOIN documents d ON d.id=s.document_id`
+const submissionSelect = `SELECT s.id,s.document_id,s.library_id,s.submitted_by_token_id,s.client_submission_id,s.formatter_skill_id,s.formatter_skill_hash,s.supersedes_submission_id,s.review_status,s.review_job_id,s.review_error,s.summary,s.tags_json,s.provenance_json,s.submitted_at,s.updated_at,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.favorite,d.created_at,d.updated_at FROM knowledge_submissions s JOIN documents d ON d.id=s.document_id JOIN libraries l ON l.id=d.library_id`
 
 func (s *Store) GetKnowledgeSubmission(ctx context.Context, id string, includeMarkdown bool) (model.KnowledgeSubmission, bool, error) {
-	item, err := scanSubmission(s.DB.QueryRowContext(ctx, submissionSelect+` WHERE s.id=?`, id))
+	item, err := scanSubmission(s.DB.QueryRowContext(ctx, submissionSelect+` WHERE d.deleted_at IS NULL AND l.deleted_at IS NULL AND s.id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.KnowledgeSubmission{}, false, ErrSubmissionNotFound
 	}
@@ -239,7 +239,7 @@ func submissionModel(item submissionScan) model.KnowledgeSubmission {
 }
 
 func (s *Store) ListKnowledgeSubmissions(ctx context.Context, tokenID, libraryID, status string, ownOnly bool) ([]model.KnowledgeSubmission, error) {
-	query := submissionSelect + ` WHERE 1=1`
+	query := submissionSelect + ` WHERE d.deleted_at IS NULL AND l.deleted_at IS NULL`
 	args := []any{}
 	if libraryID != "" {
 		query += ` AND s.library_id=?`

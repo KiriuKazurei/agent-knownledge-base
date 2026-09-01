@@ -16,7 +16,7 @@ import (
 func (s *Store) ListDocumentsFiltered(ctx context.Context, libraryID, folderID string, favorite bool) ([]model.Document, error) {
 	query := "SELECT d.id,d.library_id,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.tags_json,d.favorite,d.created_at,d.updated_at FROM documents d"
 	args := []any{}
-	conditions := []string{}
+	conditions := []string{"d.deleted_at IS NULL", "EXISTS (SELECT 1 FROM libraries l WHERE l.id=d.library_id AND l.deleted_at IS NULL)"}
 	if libraryID != "" {
 		conditions = append(conditions, "d.library_id=?")
 		args = append(args, libraryID)
@@ -29,9 +29,7 @@ func (s *Store) ListDocumentsFiltered(ctx context.Context, libraryID, folderID s
 	if favorite {
 		conditions = append(conditions, "d.favorite=1")
 	}
-	if len(conditions) > 0 {
-		query += " WHERE " + strings.Join(conditions, " AND ")
-	}
+	query += " WHERE " + strings.Join(conditions, " AND ")
 	query += " ORDER BY d.updated_at DESC"
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -50,7 +48,7 @@ func (s *Store) ListDocumentsFiltered(ctx context.Context, libraryID, folderID s
 }
 
 func (s *Store) ListFolders(ctx context.Context, libraryID string) ([]model.VirtualFolder, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT id,library_id,name,COALESCE(parent_id,''),created_at,updated_at FROM virtual_folders WHERE library_id=? ORDER BY lower(name)", libraryID)
+	rows, err := s.DB.QueryContext(ctx, "SELECT id,library_id,name,COALESCE(parent_id,''),created_at,updated_at FROM virtual_folders WHERE library_id=? AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=? AND l.deleted_at IS NULL) ORDER BY lower(name)", libraryID, libraryID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +72,7 @@ func (s *Store) CreateFolder(ctx context.Context, libraryID, name, parentID stri
 		return model.VirtualFolder{}, errors.New("libraryId and a folder name of 1-120 characters are required")
 	}
 	var libraryCount int
-	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM libraries WHERE id=?", libraryID).Scan(&libraryCount); err != nil || libraryCount == 0 {
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM libraries WHERE id=? AND deleted_at IS NULL", libraryID).Scan(&libraryCount); err != nil || libraryCount == 0 {
 		if err != nil {
 			return model.VirtualFolder{}, err
 		}
@@ -100,7 +98,27 @@ func (s *Store) CreateFolder(ctx context.Context, libraryID, name, parentID stri
 }
 
 func (s *Store) DeleteFolder(ctx context.Context, id string) error {
-	result, err := s.DB.ExecContext(ctx, "DELETE FROM virtual_folders WHERE id=?", id)
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var parentID sql.NullString
+	if err := tx.QueryRowContext(ctx, "SELECT parent_id FROM virtual_folders WHERE id=?", id).Scan(&parentID); err != nil {
+		return err
+	}
+	_, stamp := now()
+	// Removing a parent must not silently remove its nested folders. Reparent
+	// the children to the deleted folder's parent, while the FK cascade removes
+	// only the deleted folder's document memberships.
+	var replacement any
+	if parentID.Valid && parentID.String != "" {
+		replacement = parentID.String
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE virtual_folders SET parent_id=?,updated_at=? WHERE parent_id=?", replacement, stamp, id); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, "DELETE FROM virtual_folders WHERE id=?", id)
 	if err != nil {
 		return err
 	}
@@ -108,15 +126,15 @@ func (s *Store) DeleteFolder(ctx context.Context, id string) error {
 	if count == 0 {
 		return sql.ErrNoRows
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (s *Store) SetDocumentFolder(ctx context.Context, documentID, folderID string) error {
 	var documentLibrary, folderLibrary string
-	if err := s.DB.QueryRowContext(ctx, "SELECT library_id FROM documents WHERE id=?", documentID).Scan(&documentLibrary); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT d.library_id FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.id=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL", documentID).Scan(&documentLibrary); err != nil {
 		return err
 	}
-	if err := s.DB.QueryRowContext(ctx, "SELECT library_id FROM virtual_folders WHERE id=?", folderID).Scan(&folderLibrary); err != nil {
+	if err := s.DB.QueryRowContext(ctx, "SELECT f.library_id FROM virtual_folders f JOIN libraries l ON l.id=f.library_id WHERE f.id=? AND l.deleted_at IS NULL", folderID).Scan(&folderLibrary); err != nil {
 		return err
 	}
 	if documentLibrary != folderLibrary {
@@ -132,13 +150,15 @@ func (s *Store) RemoveDocumentFolder(ctx context.Context, documentID, folderID s
 }
 
 func (s *Store) ListSourceWatches(ctx context.Context, libraryID string) ([]model.SourceWatch, error) {
-	query := "SELECT id,library_id,root_path,recursive,enabled,last_scan_at,last_message,created_at,updated_at FROM source_watches"
+	query := "SELECT sw.id,sw.library_id,sw.root_path,sw.recursive,sw.enabled,sw.last_scan_at,sw.last_message,sw.created_at,sw.updated_at FROM source_watches sw JOIN libraries l ON l.id=sw.library_id"
 	args := []any{}
 	if libraryID != "" {
-		query += " WHERE library_id=?"
+		query += " WHERE sw.library_id=? AND l.deleted_at IS NULL"
 		args = append(args, libraryID)
+	} else {
+		query += " WHERE l.deleted_at IS NULL"
 	}
-	query += " ORDER BY created_at DESC"
+	query += " ORDER BY sw.created_at DESC"
 	rows, err := s.DB.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -156,7 +176,7 @@ func (s *Store) ListSourceWatches(ctx context.Context, libraryID string) ([]mode
 }
 
 func (s *Store) GetSourceWatch(ctx context.Context, id string) (model.SourceWatch, error) {
-	return scanSourceWatch(s.DB.QueryRowContext(ctx, "SELECT id,library_id,root_path,recursive,enabled,last_scan_at,last_message,created_at,updated_at FROM source_watches WHERE id=?", id))
+	return scanSourceWatch(s.DB.QueryRowContext(ctx, "SELECT sw.id,sw.library_id,sw.root_path,sw.recursive,sw.enabled,sw.last_scan_at,sw.last_message,sw.created_at,sw.updated_at FROM source_watches sw JOIN libraries l ON l.id=sw.library_id WHERE sw.id=? AND l.deleted_at IS NULL", id))
 }
 
 func scanSourceWatch(row rowScanner) (model.SourceWatch, error) {
@@ -192,7 +212,7 @@ func (s *Store) CreateSourceWatch(ctx context.Context, libraryID, rootPath strin
 		return model.SourceWatch{}, err
 	}
 	var libraryCount int
-	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM libraries WHERE id=?", libraryID).Scan(&libraryCount); err != nil || libraryCount == 0 {
+	if err := s.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM libraries WHERE id=? AND deleted_at IS NULL", libraryID).Scan(&libraryCount); err != nil || libraryCount == 0 {
 		if err != nil {
 			return model.SourceWatch{}, err
 		}
@@ -230,11 +250,11 @@ func (s *Store) DeleteSourceWatch(ctx context.Context, id string) error {
 }
 
 func (s *Store) FindDocumentByHash(ctx context.Context, libraryID, hash string) (model.Document, error) {
-	row := s.DB.QueryRowContext(ctx, "SELECT id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at FROM documents WHERE library_id=? AND content_hash=? LIMIT 1", libraryID, hash)
+	row := s.DB.QueryRowContext(ctx, "SELECT d.id,d.library_id,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.tags_json,d.favorite,d.created_at,d.updated_at FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.library_id=? AND d.content_hash=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL LIMIT 1", libraryID, hash)
 	return scanDocument(row)
 }
 func (s *Store) ChunksForLibrary(ctx context.Context, libraryID string) ([]model.Chunk, error) {
-	rows, err := s.DB.QueryContext(ctx, "SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash FROM chunks c JOIN documents d ON d.id=c.document_id WHERE d.library_id=? AND d.status='ready' ORDER BY c.document_id,c.ordinal", libraryID)
+	rows, err := s.DB.QueryContext(ctx, "SELECT c.id,c.document_id,c.text,c.location_json,c.content_hash FROM chunks c JOIN documents d ON d.id=c.document_id JOIN libraries l ON l.id=d.library_id WHERE d.library_id=? AND d.status='ready' AND d.deleted_at IS NULL AND l.deleted_at IS NULL ORDER BY c.document_id,c.ordinal", libraryID)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +272,7 @@ func (s *Store) ChunksForLibrary(ctx context.Context, libraryID string) ([]model
 	return items, rows.Err()
 }
 func (s *Store) FindDocumentBySourcePath(ctx context.Context, libraryID, sourcePath string) (model.Document, error) {
-	row := s.DB.QueryRowContext(ctx, "SELECT id,library_id,title,media_type,source_path,source_url,object_path,content_hash,status,error,tags_json,favorite,created_at,updated_at FROM documents WHERE library_id=? AND source_path=? LIMIT 1", libraryID, sourcePath)
+	row := s.DB.QueryRowContext(ctx, "SELECT d.id,d.library_id,d.title,d.media_type,d.source_path,d.source_url,d.object_path,d.content_hash,d.status,d.error,d.tags_json,d.favorite,d.created_at,d.updated_at FROM documents d JOIN libraries l ON l.id=d.library_id WHERE d.library_id=? AND d.source_path=? AND d.deleted_at IS NULL AND l.deleted_at IS NULL LIMIT 1", libraryID, sourcePath)
 	return scanDocument(row)
 }
 
@@ -262,7 +282,7 @@ func (s *Store) ListDocumentsWithSources(ctx context.Context, libraryID string) 
 
 func (s *Store) MarkDocumentSourceMissing(ctx context.Context, id string) error {
 	_, stamp := now()
-	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET status='source_missing',error='Source file is missing',updated_at=? WHERE id=? AND source_path<>''`, stamp, id)
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET status='source_missing',error='Source file is missing',updated_at=? WHERE id=? AND source_path<>'' AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=documents.library_id AND l.deleted_at IS NULL)`, stamp, id)
 	if err != nil {
 		return err
 	}
@@ -290,7 +310,7 @@ func (s *Store) ValidateLibraryIDs(ctx context.Context, ids []string) error {
 	for i, id := range values {
 		args[i] = id
 	}
-	query := `SELECT COUNT(*) FROM libraries WHERE id IN (` + strings.TrimRight(strings.Repeat("?,", len(values)), ",") + `)`
+	query := `SELECT COUNT(*) FROM libraries WHERE deleted_at IS NULL AND id IN (` + strings.TrimRight(strings.Repeat("?,", len(values)), ",") + `)`
 	var found int
 	if err := s.DB.QueryRowContext(ctx, query, args...).Scan(&found); err != nil {
 		return err
@@ -319,7 +339,7 @@ func (s *Store) SkillAccessibleToLibraries(ctx context.Context, skillID string, 
 }
 func (s *Store) UpdateDocumentSourcePath(ctx context.Context, id, sourcePath string) error {
 	_, stamp := now()
-	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET source_path=?,status='ready',error='',updated_at=? WHERE id=?`, sourcePath, stamp, id)
+	result, err := s.DB.ExecContext(ctx, `UPDATE documents SET source_path=?,status='ready',error='',updated_at=? WHERE id=? AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM libraries l WHERE l.id=documents.library_id AND l.deleted_at IS NULL)`, sourcePath, stamp, id)
 	if err != nil {
 		return err
 	}

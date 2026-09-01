@@ -56,6 +56,9 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), importedSummaryJobTimeout)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.05, "Loading imported source")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	detail, err := s.Store.GetDocument(ctx, documentID)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -67,6 +70,9 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 		return
 	}
 	if !library.AutoSummarizeImports || strings.TrimSpace(library.SummaryProviderID) == "" {
+		if s.stopIfJobCancellationRequested(ctx, jobID) {
+			return
+		}
 		_, created, fallbackErr := s.createImportedDocumentDraft(ctx, documentID)
 		if fallbackErr != nil {
 			s.failJob(ctx, jobID, fallbackErr)
@@ -76,7 +82,12 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 		if created {
 			message += "; created a traceable reference draft"
 		}
-		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+		if !s.stopIfJobCancellationRequested(ctx, jobID) {
+			_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+		}
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	provider, err := s.Store.GetProvider(ctx, library.SummaryProviderID)
@@ -95,13 +106,18 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 	}
 	material := importedReferenceExtract(detail.Preview, importedSummaryMaxRunes)
 	if material == "" {
-		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "No extractable text was available for an automatic summary")
+		if !s.stopIfJobCancellationRequested(ctx, jobID) {
+			_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "No extractable text was available for an automatic summary")
+		}
 		return
 	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.25, "Calling configured summary model")
 	raw, err := s.Providers.SynthesizeKnowledge(ctx, provider, key, detail.Title, storage.DocumentURI(detail.ID), detail.ContentHash, importedReferenceLanguage(material), material)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	if len([]byte(raw)) > importedSummaryMaxResponse {
@@ -114,6 +130,9 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 		s.failJob(ctx, jobID, err)
 		return
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	submission, duplicate, err := s.Store.CreateKnowledgeDraft(ctx, storage.KnowledgeDraftInput{
 		LibraryID:          detail.LibraryID,
 		ClientSubmissionID: "document-summary:" + detail.ID + ":" + detail.ContentHash + ":" + provider.ID + ":" + importedSummaryPromptRevision,
@@ -121,6 +140,9 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 	})
 	if err != nil {
 		s.failJob(ctx, jobID, err)
+		return
+	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
 	if !duplicate && library.AutoReviewAgentSubmissions && strings.TrimSpace(library.ReviewProviderID) != "" {
@@ -135,7 +157,9 @@ func (s *Server) runKnowledgeSummarize(jobID, documentID string) {
 	if duplicate {
 		message = "Reused existing KAH summary draft " + submission.ID + "; awaiting review"
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	}
 }
 
 func normalizeImportedSummaryCandidate(raw string, detail model.DocumentDetail) (model.KnowledgePayload, error) {

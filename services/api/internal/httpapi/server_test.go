@@ -55,9 +55,24 @@ func TestHealthAndLibraryLifecycle(t *testing.T) {
 	if created.Code != 201 {
 		t.Fatalf("create: %d %s", created.Code, created.Body.String())
 	}
+	var createdLibrary struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdLibrary); err != nil || createdLibrary.ID == "" {
+		t.Fatalf("create response: %v %s", err, created.Body.String())
+	}
+	updated := request(t, handler, "PATCH", "/api/v1/libraries/"+createdLibrary.ID, map[string]any{
+		"name": "Knowledge Hub", "description": "可编辑详情", "icon": "book-open", "color": "violet", "tags": []string{"产品", "产品", "内部"}, "favorite": true,
+	}, "desktop-test")
+	if updated.Code != 200 || !bytes.Contains(updated.Body.Bytes(), []byte(`"name":"Knowledge Hub"`)) || !bytes.Contains(updated.Body.Bytes(), []byte(`"favorite":true`)) {
+		t.Fatalf("update metadata: %d %s", updated.Code, updated.Body.String())
+	}
 	listed := request(t, handler, "GET", "/api/v1/libraries", nil, "desktop-test")
 	if listed.Code != 200 {
 		t.Fatalf("list: %d", listed.Code)
+	}
+	if !bytes.Contains(listed.Body.Bytes(), []byte(`"icon":"book-open"`)) || !bytes.Contains(listed.Body.Bytes(), []byte(`"tags":["产品","内部"]`)) {
+		t.Fatalf("list metadata: %s", listed.Body.String())
 	}
 }
 

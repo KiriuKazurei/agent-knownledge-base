@@ -35,6 +35,24 @@ func (s *Server) ResumeQueuedJobs(ctx context.Context) error {
 	return nil
 }
 
+// stopIfJobCancellationRequested is the cooperative half of running-job
+// cancellation. The API marks a running task as cancellation_requested so an
+// in-flight worker can finish its current atomic step; stage runners call this
+// helper between steps before committing more work.
+func (s *Server) stopIfJobCancellationRequested(ctx context.Context, jobID string) bool {
+	var status string
+	if err := s.Store.DB.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id=?`, jobID).Scan(&status); err != nil {
+		return false
+	}
+	if status != "cancellation_requested" && status != "cancelled" {
+		return false
+	}
+	if status == "cancellation_requested" {
+		_ = s.Store.UpdateJob(ctx, jobID, "cancelled", 0, "Cancelled by user")
+	}
+	return true
+}
+
 func (s *Server) resumeQueuedJob(item storage.QueuedJob) error {
 	payload := item.Payload
 	switch item.Kind {

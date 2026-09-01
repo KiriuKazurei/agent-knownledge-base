@@ -165,6 +165,9 @@ func (s *Server) runSourceWatchScanContext(parent context.Context, jobID string,
 	ctx, cancel := context.WithTimeout(parent, 20*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.05, "Scanning "+watch.RootPath)
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	paths := []string{}
 	err := filepath.WalkDir(watch.RootPath, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -188,6 +191,9 @@ func (s *Server) runSourceWatchScanContext(parent context.Context, jobID string,
 	}
 	var scanErr error
 	for index, path := range paths {
+		if s.stopIfJobCancellationRequested(ctx, jobID) {
+			return
+		}
 		if err := ctx.Err(); err != nil {
 			s.failJob(ctx, jobID, err)
 			return
@@ -215,6 +221,9 @@ func (s *Server) runSourceWatchScanContext(parent context.Context, jobID string,
 		}
 		_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1+0.8*float64(index+1)/float64(maxInt(1, len(paths))), "Imported "+filepath.Base(path))
 	}
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	if scanErr != nil {
 		_ = s.Store.UpdateSourceWatchScan(ctx, watch.ID, scanErr.Error())
 		s.failJob(ctx, jobID, scanErr)
@@ -229,7 +238,9 @@ func (s *Server) runSourceWatchScanContext(parent context.Context, jobID string,
 		s.failJob(ctx, jobID, reconcileErr)
 		return
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, message)
+	}
 }
 
 func supportedImportPath(path string) bool {
@@ -263,6 +274,9 @@ func itoa(value int) string {
 func (s *Server) runURLImportControlled(jobID, libraryID, target string, maxDepth, maxPages int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	origin, err := url.Parse(target)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
@@ -273,6 +287,9 @@ func (s *Server) runURLImportControlled(jobID, libraryID, target string, maxDept
 	depth := map[string]int{target: 0}
 	imported := 0
 	for len(queue) > 0 && imported < maxPages {
+		if s.stopIfJobCancellationRequested(ctx, jobID) {
+			return
+		}
 		current := queue[0]
 		queue = queue[1:]
 		if !sameHost(origin, current) || !robotsAllowed(ctx, current) {
@@ -281,6 +298,9 @@ func (s *Server) runURLImportControlled(jobID, libraryID, target string, maxDept
 		body, contentType, err := fetchPageWithRetry(ctx, current)
 		if err != nil {
 			s.failJob(ctx, jobID, err)
+			return
+		}
+		if s.stopIfJobCancellationRequested(ctx, jobID) {
 			return
 		}
 		relative, digest, err := s.Store.PutObject(bytes.NewReader(body))
@@ -347,7 +367,9 @@ func (s *Server) runURLImportControlled(jobID, libraryID, target string, maxDept
 			}
 		}
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported "+itoa(imported)+" page(s)")
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Imported "+itoa(imported)+" page(s)")
+	}
 }
 
 func fetchPageWithRetry(ctx context.Context, address string) ([]byte, string, error) {
@@ -493,18 +515,26 @@ func (s *Server) runIndexRebuild(jobID, libraryID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.1, "Loading authoritative chunks")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	chunks, err := s.Store.ChunksForLibrary(ctx, libraryID)
 	if err != nil {
 		s.failJob(ctx, jobID, err)
 		return
 	}
 	_ = s.Store.UpdateJob(ctx, jobID, "running", 0.35, "Building a new index version")
+	if s.stopIfJobCancellationRequested(ctx, jobID) {
+		return
+	}
 	result := map[string]any{}
 	if err := s.Worker.Call(ctx, "index_rebuild", map[string]any{"libraryId": libraryID, "chunks": chunks}, &result); err != nil {
 		s.failJob(ctx, jobID, err)
 		return
 	}
-	_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Index version switched")
+	if !s.stopIfJobCancellationRequested(ctx, jobID) {
+		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "Index version switched")
+	}
 }
 func (s *Server) syncExistingSourceFile(ctx context.Context, jobID, libraryID, path, relative, digest string) (bool, error) {
 	existing, err := s.Store.FindDocumentBySourcePath(ctx, libraryID, path)
