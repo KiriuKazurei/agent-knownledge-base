@@ -6,7 +6,7 @@ import CodeMirror from '@uiw/react-codemirror'
 import { markdown } from '@codemirror/lang-markdown'
 import ReactMarkdown from 'react-markdown'
 import {
-  Activity, Archive, BookOpen, Bot, CheckCircle2, CheckSquare, ChevronRight, CircleAlert, Clock3, Command, Database,
+  Activity, Archive, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3, Command, Database,
   File, FileCode2, FilePlus2, FolderArchive, FolderSearch2, Import, KeyRound, Library, Link2, ListFilter,
   LoaderCircle, Menu, Monitor, Moon, Palette, PanelRight, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
   Pencil, Sparkles, Star, Sun, Tag, Trash2, X
@@ -22,18 +22,58 @@ function IconButton({ label, children, onClick, active = false, pressed, control
   return <button type="button" className={`icon-button ${active ? 'active' : ''}`} aria-label={label} aria-pressed={pressed} aria-controls={controls} aria-busy={busy || undefined} title={label} onClick={onClick} disabled={disabled || busy}>{children}</button>
 }
 export function MarkdownContent({ content, onLink }: { content: string; onLink?: (href: string) => void }) {
-  return <ReactMarkdown components={{
+  return <div className="markdown-body"><ReactMarkdown components={{
     a: ({ href, children, ...props }) => <a {...props} href={href} onClick={(event) => {
       if (!href || !onLink) return
       event.preventDefault()
       onLink(href)
     }}>{children}</a>
-  }}>{content}</ReactMarkdown>
+  }}>{content}</ReactMarkdown></div>
 }
 
 
 function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; text: string }) {
   return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>
+}
+
+function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, skillsView, trashItemCount, commandOpen, activityOpen, onOpenCommands, onOpenActivity }: { activeSection: 'knowledge'|'skills'|'review'|'trash'; activeJobs: Job[]; backendError: string; searchInfo: string; skillsView: 'skills'|'mappings'; trashItemCount: number; commandOpen: boolean; activityOpen: boolean; onOpenCommands: () => void; onOpenActivity: () => void }) {
+  const sectionLabel = ({ knowledge: '知识管理', skills: 'Skills', review: '待审核', trash: '回收站' } as const)[activeSection]
+  const activityCount = activeJobs.length
+  const sectionStatus = activeSection === 'knowledge'
+    ? (activityCount ? `${activityCount} 个任务正在处理` : '索引队列空闲')
+    : activeSection === 'review'
+      ? '审核通过前不会写入正式索引'
+      : activeSection === 'skills'
+        ? (skillsView === 'skills' ? 'Skill 目录已就绪' : '映射状态由外部目录验证')
+        : '回收站不会自动过期'
+  const sectionMeta = activeSection === 'knowledge'
+    ? (searchInfo || '证据优先 · 本地优先')
+    : activeSection === 'review'
+      ? '审核记录可追溯'
+      : activeSection === 'skills'
+        ? (skillsView === 'skills' ? '标准入口 · 按需加载' : '真实目录软链接 · 不复制内容')
+        : `${trashItemCount} 个项目`
+  return <footer className="global-bottom-bar" aria-label="全局底栏">
+    <div className="global-bottom-status" role="status" aria-live="polite">
+      <span className={`status-dot ${backendError ? 'error' : ''}`} aria-hidden="true" />
+      <span>{backendError ? '后台服务异常' : '本地服务已连接'}</span>
+      <span className="global-bottom-separator" aria-hidden="true" />
+      <span>{sectionLabel}</span>
+      <span className="global-bottom-separator" aria-hidden="true" />
+      <span>{sectionStatus}</span>
+    </div>
+    <div className="global-bottom-right">
+      <div className="global-bottom-meta"><span>{sectionMeta}</span><span className="global-bottom-separator" aria-hidden="true" /><span>v0.1.0</span></div>
+      <nav className="global-bottom-actions" aria-label="全局功能">
+        <button type="button" className={`global-bottom-button ${commandOpen ? 'active' : ''}`} aria-label="打开功能面板" aria-haspopup="dialog" aria-expanded={commandOpen} aria-controls="command-palette" onClick={onOpenCommands}>
+          <Command size={16} aria-hidden="true" /><span>功能面板</span><kbd>Ctrl ⇧ P</kbd>
+        </button>
+        <button type="button" className={`global-bottom-button ${activityOpen ? 'active' : ''}`} aria-label="打开活动中心" aria-haspopup="dialog" aria-expanded={activityOpen} aria-controls="activity-center" onClick={onOpenActivity}>
+          <Activity size={16} aria-hidden="true" /><span>活动中心</span>{activityCount > 0 && <span className="global-bottom-badge" aria-label={`${activityCount} 个进行中任务`}>{activityCount}</span>}
+        </button>
+      </nav>
+    </div>
+  </footer>
 }
 
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'kah.detail-pane-width'
@@ -45,15 +85,26 @@ function clampDetailPaneWidth(value: number) {
   return Math.min(DETAIL_PANE_MAX_WIDTH, Math.max(DETAIL_PANE_MIN_WIDTH, value))
 }
 
+function detailPaneMaximumForViewport() {
+  if (typeof window === 'undefined') return DETAIL_PANE_MAX_WIDTH
+  const sidebarWidth = window.innerWidth <= 1180 ? 220 : 250
+  const primaryWorkspaceMinimum = 450
+  return Math.max(DETAIL_PANE_MIN_WIDTH, Math.min(DETAIL_PANE_MAX_WIDTH, window.innerWidth - sidebarWidth - primaryWorkspaceMinimum))
+}
+
+function clampDetailPaneWidthForViewport(value: number) {
+  return Math.min(detailPaneMaximumForViewport(), Math.max(DETAIL_PANE_MIN_WIDTH, value))
+}
+
 function readDetailPaneWidth() {
   if (typeof window === 'undefined') return DETAIL_PANE_DEFAULT_WIDTH
   try {
     const storedValue = window.localStorage.getItem(DETAIL_PANE_WIDTH_STORAGE_KEY)
-    if (!storedValue) return DETAIL_PANE_DEFAULT_WIDTH
+    if (!storedValue) return clampDetailPaneWidthForViewport(DETAIL_PANE_DEFAULT_WIDTH)
     const stored = Number(storedValue)
-    return Number.isFinite(stored) ? clampDetailPaneWidth(stored) : DETAIL_PANE_DEFAULT_WIDTH
+    return Number.isFinite(stored) ? clampDetailPaneWidthForViewport(stored) : clampDetailPaneWidthForViewport(DETAIL_PANE_DEFAULT_WIDTH)
   } catch {
-    return DETAIL_PANE_DEFAULT_WIDTH
+    return clampDetailPaneWidthForViewport(DETAIL_PANE_DEFAULT_WIDTH)
   }
 }
 
@@ -200,7 +251,7 @@ export function App() {
     if (!detailPaneResizing) return
     const handlePointerMove = (event: PointerEvent) => {
       const rightEdge = resizeRightEdge.current ?? window.innerWidth
-      setDetailPaneWidth(clampDetailPaneWidth(rightEdge - event.clientX))
+      setDetailPaneWidth(clampDetailPaneWidthForViewport(rightEdge - event.clientX))
     }
     const stopResizing = () => {
       resizeRightEdge.current = null
@@ -215,6 +266,11 @@ export function App() {
       window.removeEventListener('pointercancel', stopResizing)
     }
   }, [detailPaneResizing])
+  useEffect(() => {
+    const constrainToViewport = () => setDetailPaneWidth((current) => clampDetailPaneWidthForViewport(current))
+    window.addEventListener('resize', constrainToViewport)
+    return () => window.removeEventListener('resize', constrainToViewport)
+  }, [])
   useEffect(() => {
     document.body.classList.toggle('is-resizing-detail-pane', detailPaneResizing)
     return () => document.body.classList.remove('is-resizing-detail-pane')
@@ -241,7 +297,7 @@ export function App() {
   const shownDocuments = useMemo(() => (documents.data ?? []).filter((item) => !filterTags.length || filterTags.every((tag) => item.tags.includes(tag))), [documents.data, filterTags])
   const shownKnowledge = useMemo(() => (searchResults ?? knowledgeDirectory.data?.results ?? []).filter((item) => !filterTags.length || filterTags.every((tag) => item.tags.includes(tag))), [knowledgeDirectory.data?.results, searchResults, filterTags])
   const selectedLibraryValue = libraries.data?.find((item) => item.id === selectedLibrary)
-  const activeJobs = jobs.data?.filter((job) => job.status === 'running' || job.status === 'queued') ?? []
+  const activeJobs = jobs.data?.filter((job) => job.status === 'running' || job.status === 'queued' || job.status === 'cancellation_requested') ?? []
   const pipelineJobs = jobs.data?.filter((job) => ['file_import', 'url_import', 'knowledge_summarize', 'kah_knowledge_review', 'kah_knowledge_publish'].includes(job.kind)) ?? []
 
   useEffect(() => { setSelectedDocumentIds([]); selectionAnchor.current = null }, [selectedLibrary, selectedFolder, favoritesOnly])
@@ -348,16 +404,16 @@ export function App() {
     const step = event.shiftKey ? 48 : 16
     if (event.key === 'ArrowLeft') {
       event.preventDefault()
-      setDetailPaneWidth((width) => clampDetailPaneWidth(width + step))
+      setDetailPaneWidth((width) => clampDetailPaneWidthForViewport(width + step))
     } else if (event.key === 'ArrowRight') {
       event.preventDefault()
-      setDetailPaneWidth((width) => clampDetailPaneWidth(width - step))
+      setDetailPaneWidth((width) => clampDetailPaneWidthForViewport(width - step))
     } else if (event.key === 'Home') {
       event.preventDefault()
       setDetailPaneWidth(DETAIL_PANE_MIN_WIDTH)
     } else if (event.key === 'End') {
       event.preventDefault()
-      setDetailPaneWidth(DETAIL_PANE_MAX_WIDTH)
+      setDetailPaneWidth(detailPaneMaximumForViewport())
     }
   }
 
@@ -396,7 +452,6 @@ export function App() {
       </nav>
       <div className="sidebar-footer">
         <button type="button" className="footer-button" onClick={() => setSettingsOpen(true)}><Settings size={18}/><span>设置</span><kbd>Ctrl ,</kbd></button>
-        <div className="health-line"><span className={backendError ? 'status-dot error' : 'status-dot'} />{backendError ? '服务异常' : '本地服务已连接'}</div>
       </div>
     </aside>
 
@@ -406,8 +461,6 @@ export function App() {
       <header className="workspace-header">
         <div className="workspace-title-block"><span className="eyebrow">当前知识库</span><div className="workspace-title-line"><h1>{selectedLibraryValue?.name ?? '全部知识'}</h1>{selectedLibraryValue?.favorite && <Star size={15} fill="currentColor" aria-label="已标记重要"/>}</div>{selectedLibraryValue?.tags?.length ? <div className="workspace-tags">{selectedLibraryValue.tags.slice(0, 4).map((tag) => <span className="tag" key={tag}><Tag size={11}/>{tag}</span>)}</div> : null}</div>
         <div className="header-actions">
-          <IconButton label="打开命令面板" onClick={() => setCommandOpen(true)}><Command size={18}/></IconButton>
-          <IconButton label="打开活动中心" onClick={() => setActivityOpen(true)} active={activeJobs.length > 0}><Activity size={18}/></IconButton>
           <IconButton label="切换密度" onClick={ui.toggleDensity}><Menu size={18}/></IconButton>
           <IconButton label="知识库详情" active={libraryDetailsOpen} pressed={libraryDetailsOpen} controls="library-detail-pane" disabled={!selectedLibraryValue} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setLibraryDetailsOpen((value) => !value); setSelectedDocument(''); setSelectedKnowledge(''); setDetailPaneOpen(true) }}><Pencil size={17}/></IconButton>
           <button type="button" className="button secondary" onClick={() => { setUrlOpen((value) => !value) }} disabled={!selectedLibrary}><Link2 size={17}/> 网页</button>
@@ -433,15 +486,15 @@ export function App() {
         {knowledgeView === 'sources' && !documents.isLoading && shownDocuments.length === 0 && <Empty icon={<FilePlus2 size={25}/>} title={filterTags.length ? '没有符合筛选的来源文档' : '还没有来源文档'} text={filterTags.length ? '清除部分标签筛选，或导入带有这些标签的资料。' : '导入文件或保存网页后，会在此保留原始资料。'} />}
         {knowledgeView === 'knowledge' && !knowledgeDirectory.isLoading && shownKnowledge.length === 0 && <Empty icon={<BookOpen size={25}/>} title={filterTags.length ? '没有符合筛选的成型知识' : searchResults ? '没有找到匹配内容' : '还没有成型知识'} text={filterTags.length ? '清除部分标签筛选，或选择其他标签。' : searchResults ? '尝试更换关键词，或检查所选知识库的索引状态。' : '来源资料经整理、审核并发布后，会在这里供你浏览。'} />}
       </section>
-      <footer className="status-bar" role="status" aria-live="polite"><button type="button" className="status-activity-button" onClick={() => setActivityOpen(true)}>{activeJobs.length ? <><LoaderCircle className="spin" size={13}/> {activeJobs.length} 个任务正在处理</> : <><CheckCircle2 size={13}/> 索引队列空闲</>}</button><div>{searchInfo || '证据优先 · 本地优先'}<span className="separator"/>v0.1.0</div></footer>
       </>}
     </main>
 
     <aside id="knowledge-detail-pane" ref={detailPaneRef} className={`detail-pane ${detailPaneResizing ? 'resizing' : ''}`} aria-label={detailPaneOpen ? (activeSection === 'skills' ? (skillsView === 'mappings' ? '外部映射详情' : 'Skill 详情') : activeSection === 'review' ? '待审核知识详情' : libraryDetailsOpen ? '知识库详情' : knowledgeView === 'knowledge' ? '成型知识详情' : '来源文档预览') : '已折叠的详情栏'}>
-      {detailPaneOpen ? <><div className={`detail-resizer ${detailPaneResizing ? 'active' : ''}`} role="separator" tabIndex={0} aria-label="调整详情栏宽度" aria-orientation="vertical" aria-valuemin={DETAIL_PANE_MIN_WIDTH} aria-valuemax={DETAIL_PANE_MAX_WIDTH} aria-valuenow={detailPaneWidth} aria-valuetext={`${detailPaneWidth} 像素`} title="拖动调整详情栏宽度；使用左右方向键微调" onPointerDown={beginDetailPaneResize} onKeyDown={handleDetailPaneResizeKeyDown}><span aria-hidden="true" /></div>
+      {detailPaneOpen ? <><div className={`detail-resizer ${detailPaneResizing ? 'active' : ''}`} role="separator" tabIndex={0} aria-label="调整详情栏宽度" aria-orientation="vertical" aria-valuemin={DETAIL_PANE_MIN_WIDTH} aria-valuemax={detailPaneMaximumForViewport()} aria-valuenow={detailPaneWidth} aria-valuetext={`${detailPaneWidth} 像素`} title="拖动调整详情栏宽度；使用左右方向键微调" onPointerDown={beginDetailPaneResize} onKeyDown={handleDetailPaneResizeKeyDown}><span aria-hidden="true" /></div>
       <div className="detail-pane-toolbar"><strong>{libraryDetailsOpen ? '知识库详情' : '详情'}</strong><IconButton label="收起详情栏" pressed={true} controls="knowledge-detail-pane" onClick={() => { if (confirmUnsavedDraftLeave()) setDetailPaneOpen(false) }}><PanelRight size={18}/></IconButton></div>
       <div className="detail-pane-content">{activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : activeSection === 'review' ? <ReviewDetailPane selectedId={selectedSubmission} libraries={libraries.data ?? []} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('knowledge'); setSelectedSubmission(''); setSelectedKnowledge(''); setSelectedDocument(id) }} /> : libraryDetailsOpen ? <LibraryDetailPane library={selectedLibraryValue} onSaved={(library) => { queryClient.setQueryData<LibraryType[]>(['libraries'], (current) => current?.map((item) => item.id === library.id ? library : item)); setSelectedLibrary(library.id) }} onTrash={(library) => setConfirmRequest({ title: `将“${library.name}”移入回收站？`, description: '知识库及其文档会从列表、检索、MCP 和索引中排除；监视目录会暂停。', confirmLabel: '移入回收站', danger: true, onConfirm: async () => { await client.deleteLibrary(library.id); setSelectedLibrary(''); setLibraryDetailsOpen(false); await queryClient.invalidateQueries({ queryKey: ['libraries'] }); await queryClient.invalidateQueries({ queryKey: ['trash'] }); setUndo({ message: `已将“${library.name}”移入回收站`, run: async () => { await client.restoreTrash('library', library.id); await queryClient.invalidateQueries({ queryKey: ['libraries'] }) } }) } })} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(''); setSelectedDocument(id) }} onDraftDirty={setKnowledgeDraftDirty} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { void detail.refetch(); void documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} onDraftDirty={setDocumentDraftDirty} />}</div></> : <button className="collapsed-detail-toggle" type="button" aria-label="展开详情栏" title="展开详情栏" onClick={() => setDetailPaneOpen(true)}><PanelRight size={18}/></button>}
     </aside>
+    <GlobalBottomBar activeSection={activeSection} activeJobs={activeJobs} backendError={backendError} searchInfo={searchInfo} skillsView={skillsView} trashItemCount={trash.data?.length ?? 0} commandOpen={commandOpen} activityOpen={activityOpen} onOpenCommands={() => setCommandOpen(true)} onOpenActivity={() => setActivityOpen(true)} />
     <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
     <CreateLibraryDialog open={createLibraryOpen} onOpenChange={setCreateLibraryOpen} busy={createLibrary.isPending} error={createLibrary.error as Error | null} onCreate={(name, description) => createLibrary.mutate({ name, description })}/>
     <SaveSearchDialog open={saveSearchDialogOpen} onOpenChange={setSaveSearchDialogOpen} defaultName={query.slice(0, 48)} query={query} view={knowledgeView} tagCount={filterTags.length} busy={saveSearch.isPending} error={saveSearch.error as Error | null} onSave={(name) => saveSearch.mutate(name)}/>
@@ -507,7 +560,7 @@ function FolderCreateRow({ depth, name, setName, busy, onSubmit, onCancel }: { d
 function BatchToolbar({ selectedIds, shownIds, folders, busy, onSelectAll, onClear, onAction, onTrash }: { selectedIds: string[]; shownIds: string[]; folders: VirtualFolder[]; busy: boolean; onSelectAll: () => void; onClear: () => void; onAction: (action: Omit<DocumentBatchRequest, 'documentIds'>) => void; onTrash: () => void }) {
   const [tag, setTag] = useState('')
   const [folderId, setFolderId] = useState('')
-  if (!selectedIds.length) return <div className="selection-hint"><CheckSquare size={15}/>单击选择；Ctrl 切换；Shift 连选。<button type="button" onClick={onSelectAll} disabled={!shownIds.length}>全选当前筛选结果</button></div>
+  if (!selectedIds.length) return null
   const tags = parseLibraryTags(tag)
   return <div className="batch-toolbar" role="toolbar" aria-label="批量文档操作"><strong>{selectedIds.length} 项已选择</strong><button type="button" className="text-button" onClick={onSelectAll} disabled={selectedIds.length === shownIds.length}>全选筛选结果</button><label>标签<input value={tag} onChange={(event) => setTag(event.target.value)} placeholder="输入标签"/></label><button type="button" className="button ghost" disabled={busy || !tags.length} onClick={() => onAction({ action: 'add_tags', tags })}>增加</button><button type="button" className="button ghost" disabled={busy || !tags.length} onClick={() => onAction({ action: 'remove_tags', tags })}>移除</button><label>目录<select value={folderId} onChange={(event) => setFolderId(event.target.value)}><option value="">选择目录</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label><button type="button" className="button ghost" disabled={busy || !folderId} onClick={() => onAction({ action: 'add_folders', folderIds: [folderId] })}>加入</button><button type="button" className="button ghost" disabled={busy || !folderId} onClick={() => onAction({ action: 'remove_folders', folderIds: [folderId] })}>移出</button><MoreActions actions={[{ id: 'favorite', label: '收藏', run: () => onAction({ action: 'favorite', favorite: true }) }, { id: 'unfavorite', label: '取消收藏', run: () => onAction({ action: 'favorite', favorite: false }) }, { id: 'reindex', label: '重新索引', run: () => onAction({ action: 'reindex' }) }, { id: 'trash', label: '移入回收站', danger: true, run: onTrash }]}/><button type="button" className="icon-button" aria-label="清除选择" onClick={onClear}><X size={16}/></button></div>
 }
@@ -552,7 +605,7 @@ function TrashWorkspace({ items, loading, error, onChanged, onConfirm }: { items
   const [selected, setSelected] = useState<string[]>([])
   async function restore(item: TrashEntry) { await client.restoreTrash(item.kind, item.id); setSelected((current) => current.filter((id) => id !== `${item.kind}:${item.id}`)); onChanged() }
   const selectedItems = items.filter((item) => selected.includes(`${item.kind}:${item.id}`))
-  return <><header className="workspace-header"><div><span className="eyebrow">可恢复删除</span><h1>回收站</h1></div><div className="header-actions"><button type="button" className="button secondary" disabled={!selectedItems.length} onClick={() => void Promise.all(selectedItems.map(restore))}>恢复所选</button><button type="button" className="button danger" disabled={!items.length} onClick={() => onConfirm({ title: '永久清空回收站？', description: '此操作会删除数据库记录和不再被引用的对象文件，无法撤销。', confirmLabel: '永久清空', danger: true, onConfirm: async () => { await client.emptyTrash(); setSelected([]); onChanged() } })}><Trash2 size={16}/>永久清空</button></div></header>{error && <div className="inline-error" role="alert"><CircleAlert size={17}/>{error.message}</div>}<section className="result-list trash-list">{loading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入回收站</div>}{items.map((item) => { const key = `${item.kind}:${item.id}`; return <article className="document-row" key={key}><input type="checkbox" aria-label={`选择 ${item.name}`} checked={selected.includes(key)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, key] : current.filter((value) => value !== key))}/><span className="file-icon">{item.kind === 'library' ? <Library size={18}/> : <File size={18}/>}</span><span className="document-copy"><strong>{item.name}</strong><small>{item.kind === 'library' ? `知识库 · ${item.itemCount} 个文档 · 恢复后监视仍保持暂停` : `文档 · ${item.description}`}</small></span><time>{new Date(item.deletedAt).toLocaleString()}</time><button type="button" className="button secondary" onClick={() => void restore(item)}>恢复</button><MoreActions actions={[{ id: 'purge', label: '永久删除', danger: true, run: () => onConfirm({ title: `永久删除“${item.name}”？`, description: '将删除记录和不再被引用的对象文件，无法恢复。', danger: true, onConfirm: async () => { await client.purgeTrash(item.kind, item.id); onChanged() } }) }]}/></article>})}{!loading && !items.length && <Empty icon={<Trash2 size={25}/>} title="回收站为空" text="移入回收站的知识库和文档会保留在这里，直到手动清空。"/>}</section><footer className="status-bar"><div>回收站不会自动过期</div><div>{items.length} 个项目</div></footer></>
+  return <><header className="workspace-header"><div><span className="eyebrow">可恢复删除</span><h1>回收站</h1></div><div className="header-actions"><button type="button" className="button secondary" disabled={!selectedItems.length} onClick={() => void Promise.all(selectedItems.map(restore))}>恢复所选</button><button type="button" className="button danger" disabled={!items.length} onClick={() => onConfirm({ title: '永久清空回收站？', description: '此操作会删除数据库记录和不再被引用的对象文件，无法撤销。', confirmLabel: '永久清空', danger: true, onConfirm: async () => { await client.emptyTrash(); setSelected([]); onChanged() } })}><Trash2 size={16}/>永久清空</button></div></header>{error && <div className="inline-error" role="alert"><CircleAlert size={17}/>{error.message}</div>}<section className="result-list trash-list">{loading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入回收站</div>}{items.map((item) => { const key = `${item.kind}:${item.id}`; return <article className="document-row" key={key}><input type="checkbox" aria-label={`选择 ${item.name}`} checked={selected.includes(key)} onChange={(event) => setSelected((current) => event.target.checked ? [...current, key] : current.filter((value) => value !== key))}/><span className="file-icon">{item.kind === 'library' ? <Library size={18}/> : <File size={18}/>}</span><span className="document-copy"><strong>{item.name}</strong><small>{item.kind === 'library' ? `知识库 · ${item.itemCount} 个文档 · 恢复后监视仍保持暂停` : `文档 · ${item.description}`}</small></span><time>{new Date(item.deletedAt).toLocaleString()}</time><button type="button" className="button secondary" onClick={() => void restore(item)}>恢复</button><MoreActions actions={[{ id: 'purge', label: '永久删除', danger: true, run: () => onConfirm({ title: `永久删除“${item.name}”？`, description: '将删除记录和不再被引用的对象文件，无法恢复。', danger: true, onConfirm: async () => { await client.purgeTrash(item.kind, item.id); onChanged() } }) }]}/></article>})}{!loading && !items.length && <Empty icon={<Trash2 size={25}/>} title="回收站为空" text="移入回收站的知识库和文档会保留在这里，直到手动清空。"/>}</section></>
 }
 
 function LibraryDetailPane({ library, onSaved, onTrash }: { library?: LibraryType; onSaved: (library: LibraryType) => void; onTrash: (library: LibraryType) => void }) {
@@ -686,7 +739,6 @@ function ReviewWorkspace({ libraries, selectedId, onSelect }: { libraries: Libra
         {!submissions.isLoading && !actionable.length && <Empty icon={<CheckCircle2 size={25}/>} title="审核队列为空" text="新的 Agent 提交会先停留在这里，审核通过后才可检索。" />}
       </div>
     </section>
-    <footer className="status-bar" role="status" aria-live="polite"><div><Clock3 size={13}/> 审核通过前不会写入正式索引</div><div>{submissions.isFetching ? '正在刷新审核状态' : '审核记录可追溯'}<span className="separator"/>v0.1.0</div></footer>
   </>
 }
 
@@ -764,7 +816,6 @@ function SkillsWorkspace({ libraries: _libraries, selectedId, onSelect, view, on
       </div>
     </header>
     {view === 'skills' ? <><div className="search-row"><Search size={19}/><input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="筛选 Skill 名称或能力描述…" aria-label="筛选 Skill" />{filter && <IconButton label="清空筛选" onClick={() => setFilter('')}><X size={16}/></IconButton>}</div>{importError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{importError.message}</div>}<div className="content-heading"><div><h2>已安装 Skills</h2><span>{visible.length} 个能力包</span></div><IconButton label="刷新 Skills" onClick={() => void skills.refetch()}><RefreshCw size={17}/></IconButton></div><section className="result-list" aria-live="polite">{skills.isLoading && <div className="preview-loading"><LoaderCircle className="spin"/>正在载入 Skills</div>}{visible.map((item) => <button type="button" className={`document-row ${selectedId === item.id ? 'active' : ''}`} key={item.id} onClick={() => onSelect(item.id)}><span className="file-icon"><FolderArchive size={19}/></span><span className="document-copy"><strong>{item.name}</strong><small>{item.description}</small></span><span className={`status-pill ${item.status}`}>{item.status === 'ready' ? `${item.fileCount} 个文件` : '校验失败'}</span><time>{new Date(item.updatedAt).toLocaleDateString()}</time></button>)}{!skills.isLoading && visible.length === 0 && <Empty icon={<FolderArchive size={25}/>} title="还没有 Skill" text="导入 SKILL.md 或 Skill zip，建立可复用的 Agent 能力。" />}</section></> : <SkillMappingsWorkspace skills={skills.data ?? []} selectedTargetId={selectedTargetId} onTargetSelect={onTargetSelect} />}
-    <footer className="status-bar" role="status" aria-live="polite"><div>{view === 'skills' ? importMutation.isPending ? <><LoaderCircle className="spin" size={13}/> 正在导入 Skill</> : <><CheckCircle2 size={13}/> Skill 目录已就绪</> : <><Link2 size={13}/> 映射状态由外部目录验证</>}</div><div>{view === 'skills' ? '标准入口 · 按需加载' : '真实目录软链接 · 不复制内容'}<span className="separator"/>v0.1.0</div></footer>
   </>
 }
 
@@ -850,12 +901,12 @@ function KnowledgePreview({ detail, loading, onOpenDocument, onDraftDirty }: { d
       setOpenError(error instanceof Error ? error.message : String(error))
     }
   }
-  return <div className="preview-pane">
+  return <div className="preview-pane knowledge-preview-pane">
     <div className="preview-heading"><div><span className="eyebrow">KAH Knowledge Profile v1</span><h2>{payload.title}</h2><p>{payload.description}</p></div><div className="knowledge-heading-actions"><span className={`status-pill ${detail.status}`}>{detail.stable ? `稳定 r${detail.revision}` : detail.status}</span>{detail.stable && <button type="button" className="button secondary" onClick={() => setEditing(true)}><Pencil size={15}/>创建修订</button>}</div></div>
-    <div className="preview-meta"><span>{payload.type}{payload.subtype ? ` · ${payload.subtype}` : ''}</span><span>{payload.language}</span><span>{detail.flags.length ? detail.flags.join('、') : '无运行时警告'}</span></div>
+    <div className="preview-meta knowledge-preview-meta"><span>{payload.type}{payload.subtype ? ` · ${payload.subtype}` : ''}</span><span>{payload.language}</span><span>{detail.flags.length ? detail.flags.join('、') : '无运行时警告'}</span></div>
     {payload.sections.map((section) => <section className="preview-section" key={section.id}><h3>{section.heading}</h3><MarkdownContent content={section.content}/></section>)}
     {openError && <div className="inline-error" role="alert"><CircleAlert size={16}/>{openError}</div>}
-    {payload.sources?.length ? <section className="preview-section"><h3>可引用来源</h3><ul>{payload.sources.map((source) => { const documentId = source.resource.startsWith('kah://document/') ? source.resource.slice('kah://document/'.length) : ''; return <li key={source.id}><code>{`[^${source.id}]`}</code> {source.resource.startsWith('https://') ? <a href={source.resource} onClick={(event) => { event.preventDefault(); void openExternal(source.resource) }}>{source.title || source.resource}</a> : <span>{source.title || source.resource}</span>}{documentId && <button type="button" className="text-button source-open-button" onClick={() => onOpenDocument(documentId)}>查看来源文档</button>}{source.locator && <small> · {Object.entries(source.locator).map(([key, value]) => `${key}: ${String(value)}`).join(', ')}</small>}</li> })}</ul></section> : null}
+    {payload.sources?.length ? <section className="preview-section knowledge-sources"><h3>可引用来源</h3><ul>{payload.sources.map((source) => { const documentId = source.resource.startsWith('kah://document/') ? source.resource.slice('kah://document/'.length) : ''; return <li key={source.id}><div className="knowledge-source-main"><code>{`[^${source.id}]`}</code>{source.resource.startsWith('https://') ? <a href={source.resource} onClick={(event) => { event.preventDefault(); void openExternal(source.resource) }}>{source.title || source.resource}</a> : <span>{source.title || source.resource}</span>}</div><div className="knowledge-source-meta">{documentId && <button type="button" className="text-button source-open-button" onClick={() => onOpenDocument(documentId)}>查看来源文档</button>}{source.locator && <small>{Object.entries(source.locator).map(([key, value]) => `${key}: ${String(value)}`).join(' · ')}</small>}</div></li> })}</ul></section> : null}
   </div>
 }
 
@@ -964,7 +1015,7 @@ function DocumentPreview({ detail, loading, onSaved, onLink, onDraftDirty }: { d
     metadataMutation.mutate({ title: titleDraft.trim(), tags: parseLibraryTags(tagDraft) })
   }
   const operationError = metadataMutation.error || save.error || folderMutation.error || reindex.error || trashDocument.error || relink.error
-  return <div className="preview-shell">
+  return <div className="preview-shell document-preview-shell">
     <header className="preview-header"><div className="preview-icon"><File size={20}/></div><div><span>{detail.mediaType}</span><h2>{detail.title}</h2></div></header>
     <div className="preview-meta"><span className={`status-pill ${detail.status}`}>{detail.status === 'ready' ? '索引就绪' : detail.status}</span><span><Database size={14}/>{detail.preview.length} 个片段</span>{detail.favorite && <span><Star size={13} fill="currentColor"/>已收藏</span>}</div>
     <div className="document-metadata-editor"><label>标题<input value={titleDraft} onChange={(event) => setTitleDraft(event.target.value)} maxLength={240}/></label><label>标签<input value={tagDraft} onChange={(event) => setTagDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveTags() } }} placeholder="用逗号分隔"/></label><button type="button" className="button secondary" onClick={saveTags} disabled={metadataMutation.isPending || !titleDraft.trim()}>{metadataMutation.isPending ? <LoaderCircle className="spin" size={14}/> : <Save size={14}/>}保存信息</button></div>

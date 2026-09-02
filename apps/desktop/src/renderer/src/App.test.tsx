@@ -142,12 +142,18 @@ test('places pending review details in the right pane and resizes it with the ke
   vi.mocked(client.submissions).mockResolvedValue([pending, processed])
   vi.mocked(client.submission).mockResolvedValue(pending)
   window.localStorage.removeItem('kah.detail-pane-width')
+  const originalInnerWidth = window.innerWidth
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
 
   render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
   fireEvent.click(screen.getByRole('button', { name: /待审核/ }))
 
   expect(await screen.findByRole('heading', { name: '待审核知识' })).toBeInTheDocument()
   expect(await screen.findByRole('heading', { name: '待审核测试知识' })).toBeInTheDocument()
+  const globalBottomBar = screen.getByRole('contentinfo', { name: '全局底栏' })
+  expect(globalBottomBar).toHaveTextContent('审核通过前不会写入正式索引')
+  expect(globalBottomBar).toHaveTextContent('审核记录可追溯')
+  expect(document.querySelector('.status-bar')).not.toBeInTheDocument()
   expect(document.querySelector('.review-layout .review-card')).not.toBeInTheDocument()
   expect(screen.queryByText('已处理知识')).not.toBeInTheDocument()
 
@@ -166,6 +172,7 @@ test('places pending review details in the right pane and resizes it with the ke
   fireEvent.keyDown(resizer, { key: 'Home' })
   expect(resizer).toHaveAttribute('aria-valuenow', '330')
   window.localStorage.removeItem('kah.detail-pane-width')
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
 })
 
 test('shows failed Skill imports in the management workspace', async () => {

@@ -13,6 +13,7 @@ let mainWindow: BrowserWindow | undefined
 let isQuitting = false
 let backendMaintenance = false
 const desktopToken = `desktop_${randomBytes(32).toString('base64url')}`
+const isPrimaryInstance = app.requestSingleInstanceLock()
 
 
 const titleBarTheme = {
@@ -230,6 +231,10 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  if (!isPrimaryInstance) {
+    app.quit()
+    return
+  }
   ipcMain.handle('runtime:config', () => ({ apiBaseUrl: `http://127.0.0.1:${API_PORT}/api/v1`, desktopToken, dataRoot: dataRoot(), version: app.getVersion() }))
   Menu.setApplicationMenu(null)
   ipcMain.handle('window:set-titlebar-theme', (_event, theme: 'light' | 'dark') => {
@@ -270,9 +275,22 @@ app.whenReady().then(async () => {
     await shell.openExternal(target)
   })
   startBackend()
-  try { await waitForBackend() } catch (error) { dialog.showErrorBox('Knowledge Agent Hub', String(error)) }
+  try {
+    await waitForBackend()
+  } catch (error) {
+    stopBackend()
+    dialog.showErrorBox('Knowledge Agent Hub', String(error))
+    app.quit()
+    return
+  }
   await createWindow()
   app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) await createWindow() })
+})
+
+app.on('second-instance', () => {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.focus()
 })
 
 function stopBackend(): void {
