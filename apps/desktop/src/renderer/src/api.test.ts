@@ -38,3 +38,17 @@ test('surfaces a failed Skill import job', async () => {
 
   await expect(client.importSkill('C:\\skills\\broken.zip')).rejects.toThrow('invalid skill package')
 })
+
+test('sends graph scope and fractional positions without rounding in the client', async () => {
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+  fetchMock
+    .mockResolvedValueOnce(response({ workspace: { id: 'workspace-1' }, nodes: [], edges: [], truncated: false, hiddenNodeCount: 0, limits: { requestedDepth: 1, appliedDepth: 1, maxNodes: 250 } }))
+    .mockResolvedValueOnce(response({ positions: [{ nodeId: 'node-1', xPct: 37.625, yPct: 14.083 }] }))
+
+  await client.graph('library-1', 'workspace-1', 'node-1', 2, 120)
+  await client.saveGraphPositions('workspace-1', [{ nodeId: 'node-1', xPct: 37.6254, yPct: 14.0834 }])
+
+  expect(fetchMock.mock.calls[0][0]).toContain('/graph?libraryId=library-1&workspaceId=workspace-1&centerNodeId=node-1&depth=2&limit=120')
+  expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ positions: [{ nodeId: 'node-1', xPct: 37.6254, yPct: 14.0834 }] }) })
+})

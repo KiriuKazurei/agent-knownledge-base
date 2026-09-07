@@ -83,6 +83,7 @@ func (s *Store) migrate() error {
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
 			icon TEXT NOT NULL DEFAULT 'library', color TEXT NOT NULL DEFAULT 'jade', tags_json TEXT NOT NULL DEFAULT '[]', favorite INTEGER NOT NULL DEFAULT 0,
 			allow_remote_models INTEGER NOT NULL DEFAULT 0, auto_summarize_imports INTEGER NOT NULL DEFAULT 0,
+			import_conversion_mode TEXT NOT NULL DEFAULT 'reference',
 			summary_provider_id TEXT NOT NULL DEFAULT '', auto_review_agent_submissions INTEGER NOT NULL DEFAULT 0,
 			review_provider_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
 		)`,
@@ -133,7 +134,10 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_skill_mappings_skill ON skill_mappings(skill_id)`,
 		`CREATE TABLE IF NOT EXISTS jobs (
 			id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, progress REAL NOT NULL DEFAULT 0,
-			message TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL DEFAULT '{}', origin_job_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+			message TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '',
+			completed_units INTEGER NOT NULL DEFAULT 0, total_units INTEGER NOT NULL DEFAULT 0,
+			error_code TEXT NOT NULL DEFAULT '', checkpoint_json TEXT NOT NULL DEFAULT '{}',
+			payload_json TEXT NOT NULL DEFAULT '{}', origin_job_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS agent_tokens (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scopes_json TEXT NOT NULL,
@@ -246,6 +250,21 @@ func (s *Store) migrate() error {
 			FOREIGN KEY(knowledge_id, revision) REFERENCES knowledge_revisions(knowledge_id, revision) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_knowledge_relations_target ON knowledge_relations(target_uri, target_revision, relation_type)`,
+		`CREATE TABLE IF NOT EXISTS graph_workspaces (
+			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			name TEXT NOT NULL DEFAULT '默认图谱', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+			UNIQUE(library_id, name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS graph_node_positions (
+			workspace_id TEXT NOT NULL REFERENCES graph_workspaces(id) ON DELETE CASCADE,
+			node_id TEXT NOT NULL, x_pct REAL NOT NULL CHECK(x_pct >= 0 AND x_pct <= 100),
+			y_pct REAL NOT NULL CHECK(y_pct >= 0 AND y_pct <= 100), updated_at TEXT NOT NULL,
+			PRIMARY KEY(workspace_id, node_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS graph_workspace_preferences (
+			workspace_id TEXT PRIMARY KEY REFERENCES graph_workspaces(id) ON DELETE CASCADE,
+			filters_json TEXT NOT NULL DEFAULT '{}', viewport_json TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS knowledge_derivations (
 			id TEXT PRIMARY KEY, knowledge_id TEXT NOT NULL, revision INTEGER NOT NULL,
 			derivation_json TEXT NOT NULL,
@@ -317,6 +336,13 @@ func (s *Store) migrate() error {
 	}{
 		{"documents", "deleted_at", "TEXT"},
 		{"jobs", "origin_job_id", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "stage", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "outcome", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "completed_units", "INTEGER NOT NULL DEFAULT 0"},
+		{"jobs", "total_units", "INTEGER NOT NULL DEFAULT 0"},
+		{"jobs", "error_code", "TEXT NOT NULL DEFAULT ''"},
+		{"jobs", "checkpoint_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"libraries", "import_conversion_mode", "TEXT NOT NULL DEFAULT 'reference'"},
 		{"saved_searches", "view", "TEXT NOT NULL DEFAULT 'sources'"},
 		{"saved_searches", "filters_json", "TEXT NOT NULL DEFAULT '{}'"},
 		{"saved_searches", "sort_json", "TEXT NOT NULL DEFAULT '{}'"},
@@ -330,6 +356,11 @@ func (s *Store) migrate() error {
 		} else if err != nil {
 			return fmt.Errorf("migration failed checking %s.%s: %w", migration.table, migration.name, err)
 		}
+	}
+	// Preserve the legacy boolean behavior for databases created before the
+	// explicit conversion mode existed. New writes keep both fields aligned.
+	if _, err := s.DB.Exec(`UPDATE libraries SET import_conversion_mode='enhanced' WHERE auto_summarize_imports=1 AND import_conversion_mode='reference'`); err != nil {
+		return fmt.Errorf("migration failed mapping legacy import conversion mode: %w", err)
 	}
 	for _, indexStatement := range []string{
 		`CREATE INDEX IF NOT EXISTS idx_libraries_deleted ON libraries(deleted_at, updated_at DESC)`,
@@ -395,8 +426,8 @@ func (s *Store) CreateLibrary(ctx context.Context, name, description string) (mo
 		return model.Library{}, errors.New("name is required")
 	}
 	t, stamp := now()
-	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), Icon: "library", Color: "jade", Tags: []string{}, CreatedAt: t, UpdatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,icon,color,tags_json,favorite,allow_remote_models,auto_summarize_imports,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, item.Icon, item.Color, "[]", 0, 0, 0, "", 0, "", stamp, stamp)
+	item := model.Library{ID: uuid.NewString(), Name: strings.TrimSpace(name), Description: strings.TrimSpace(description), Icon: "library", Color: "jade", Tags: []string{}, ImportConversionMode: "reference", CreatedAt: t, UpdatedAt: t}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO libraries(id,name,description,icon,color,tags_json,favorite,allow_remote_models,auto_summarize_imports,import_conversion_mode,summary_provider_id,auto_review_agent_submissions,review_provider_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, item.ID, item.Name, item.Description, item.Icon, item.Color, "[]", 0, 0, 0, item.ImportConversionMode, "", 0, "", stamp, stamp)
 	return item, err
 }
 
@@ -416,6 +447,7 @@ type LibraryPatch struct {
 	Favorite                   *bool
 	AllowRemoteModels          *bool
 	AutoSummarizeImports       *bool
+	ImportConversionMode       *string
 	AutoReviewAgentSubmissions *bool
 	SummaryProviderID          *string
 	ReviewProviderID           *string
@@ -495,6 +527,22 @@ func (s *Store) UpdateLibraryPatch(ctx context.Context, id string, patch Library
 	}
 	if patch.AutoSummarizeImports != nil {
 		current.AutoSummarizeImports = *patch.AutoSummarizeImports
+		if patch.ImportConversionMode == nil {
+			if *patch.AutoSummarizeImports {
+				current.ImportConversionMode = "enhanced"
+			} else {
+				current.ImportConversionMode = "reference"
+			}
+		}
+	}
+	if patch.ImportConversionMode != nil {
+		rawMode := strings.TrimSpace(*patch.ImportConversionMode)
+		mode := normalizeImportConversionMode(rawMode)
+		if mode != rawMode {
+			return current, errors.New("import conversion mode must be reference, enhanced, or off")
+		}
+		current.ImportConversionMode = mode
+		current.AutoSummarizeImports = mode == "enhanced"
 	}
 	if patch.AutoReviewAgentSubmissions != nil {
 		current.AutoReviewAgentSubmissions = *patch.AutoReviewAgentSubmissions
@@ -511,7 +559,7 @@ func (s *Store) UpdateLibraryPatch(ctx context.Context, id string, patch Library
 	tagsJSON, _ := json.Marshal(current.Tags)
 	var updated string
 	current.UpdatedAt, updated = now()
-	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,icon=?,color=?,tags_json=?,favorite=?,allow_remote_models=?,auto_summarize_imports=?,summary_provider_id=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, current.Icon, current.Color, string(tagsJSON), boolInt(current.Favorite), boolInt(current.AllowRemoteModels), boolInt(current.AutoSummarizeImports), current.SummaryProviderID, boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
+	_, err = s.DB.ExecContext(ctx, `UPDATE libraries SET name=?,description=?,icon=?,color=?,tags_json=?,favorite=?,allow_remote_models=?,auto_summarize_imports=?,import_conversion_mode=?,summary_provider_id=?,auto_review_agent_submissions=?,review_provider_id=?,updated_at=? WHERE id=?`, current.Name, current.Description, current.Icon, current.Color, string(tagsJSON), boolInt(current.Favorite), boolInt(current.AllowRemoteModels), boolInt(current.AutoSummarizeImports), current.ImportConversionMode, current.SummaryProviderID, boolInt(current.AutoReviewAgentSubmissions), current.ReviewProviderID, updated, id)
 	return current, err
 }
 
@@ -614,6 +662,32 @@ func (s *Store) GetDocument(ctx context.Context, id string) (model.DocumentDetai
 		doc.FolderIDs = append(doc.FolderIDs, folderID)
 	}
 	return model.DocumentDetail{Document: doc, Preview: chunks}, errors.Join(rows.Err(), folderRows.Err())
+}
+
+// ListDocumentChunks reads the complete extracted source in stable ordinal
+// pages. Document previews intentionally remain bounded; conversion and
+// export callers must use this method so long documents are never silently
+// truncated at the preview limit.
+func (s *Store) ListDocumentChunks(ctx context.Context, documentID string, offset, limit int) ([]model.Chunk, error) {
+	if offset < 0 || limit < 1 || limit > 5000 {
+		return nil, errors.New("document chunk pagination is invalid")
+	}
+	rows, err := s.DB.QueryContext(ctx, `SELECT id,document_id,text,location_json,content_hash FROM chunks WHERE document_id=? ORDER BY ordinal LIMIT ? OFFSET ?`, documentID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	chunks := []model.Chunk{}
+	for rows.Next() {
+		var chunk model.Chunk
+		var location string
+		if err := rows.Scan(&chunk.ID, &chunk.DocumentID, &chunk.Text, &location, &chunk.ContentHash); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(location), &chunk.Location)
+		chunks = append(chunks, chunk)
+	}
+	return chunks, rows.Err()
 }
 
 func (s *Store) DocumentNeedsTextRepair(ctx context.Context, id string) (bool, error) {
@@ -1477,9 +1551,76 @@ func (s *Store) CreateJob(ctx context.Context, kind string, payload any) (model.
 	return job, err
 }
 
+// JobCheckpoint is the durable progress envelope for long-running jobs. Data
+// is intentionally kept private to storage callers; the public jobs API only
+// exposes stage, counters, outcome and a stable error code.
+type JobCheckpoint struct {
+	Stage          string
+	CompletedUnits int
+	TotalUnits     int
+	Outcome        string
+	ErrorCode      string
+	Data           json.RawMessage
+}
+
+// GetJobCheckpoint returns the last committed checkpoint for a job. An empty
+// checkpoint is valid and is represented by an empty JSON object.
+func (s *Store) GetJobCheckpoint(ctx context.Context, id string) (JobCheckpoint, error) {
+	var checkpoint JobCheckpoint
+	var data string
+	if err := s.DB.QueryRowContext(ctx, `SELECT stage,completed_units,total_units,outcome,error_code,checkpoint_json FROM jobs WHERE id=?`, id).
+		Scan(&checkpoint.Stage, &checkpoint.CompletedUnits, &checkpoint.TotalUnits, &checkpoint.Outcome, &checkpoint.ErrorCode, &data); err != nil {
+		return JobCheckpoint{}, err
+	}
+	if strings.TrimSpace(data) == "" {
+		data = "{}"
+	}
+	checkpoint.Data = json.RawMessage(data)
+	return checkpoint, nil
+}
+
 func (s *Store) UpdateJob(ctx context.Context, id, status string, progress float64, message string) error {
 	_, stamp := now()
-	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status=CASE WHEN status='cancellation_requested' THEN 'cancelled' ELSE ? END,progress=?,message=CASE WHEN status='cancellation_requested' THEN 'Cancelled by user' ELSE ? END,updated_at=? WHERE id=? AND status<>'cancelled'`, status, progress, message, stamp, id)
+	outcome := ""
+	switch status {
+	case "completed":
+		outcome = "completed"
+	case "failed":
+		outcome = "failed"
+	case "cancelled":
+		outcome = "cancelled"
+	}
+	_, err := s.DB.ExecContext(ctx, `UPDATE jobs SET status=CASE WHEN status='cancellation_requested' THEN 'cancelled' ELSE ? END,progress=?,outcome=CASE WHEN status='cancellation_requested' THEN 'cancelled' WHEN ?<>'' THEN ? ELSE outcome END,message=CASE WHEN status='cancellation_requested' THEN 'Cancelled by user' ELSE ? END,updated_at=? WHERE id=? AND status<>'cancelled'`, status, progress, outcome, outcome, message, stamp, id)
+	return err
+}
+
+// UpdateJobCheckpoint atomically records a stage transition and its durable
+// checkpoint alongside the job status. A cancellation request wins over a
+// late stage update, so a completed provider call cannot resurrect a job.
+func (s *Store) UpdateJobCheckpoint(ctx context.Context, id, status, stage string, progress float64, completedUnits, totalUnits int, outcome, errorCode, message string, data any) error {
+	if completedUnits < 0 || totalUnits < 0 || (totalUnits > 0 && completedUnits > totalUnits) {
+		return errors.New("invalid job checkpoint counters")
+	}
+	if progress < 0 || progress > 1 {
+		return errors.New("invalid job checkpoint progress")
+	}
+	checkpoint, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal job checkpoint: %w", err)
+	}
+	_, stamp := now()
+	terminalOutcome := outcome
+	if terminalOutcome == "" {
+		switch status {
+		case "completed":
+			terminalOutcome = "completed"
+		case "failed":
+			terminalOutcome = "failed"
+		case "cancelled":
+			terminalOutcome = "cancelled"
+		}
+	}
+	_, err = s.DB.ExecContext(ctx, `UPDATE jobs SET status=CASE WHEN status='cancellation_requested' THEN 'cancelled' ELSE ? END,progress=?,message=CASE WHEN status='cancellation_requested' THEN 'Cancelled by user' ELSE ? END,stage=CASE WHEN status='cancellation_requested' THEN 'cancelled' ELSE ? END,outcome=CASE WHEN status='cancellation_requested' THEN 'cancelled' WHEN ?<>'' THEN ? ELSE outcome END,completed_units=?,total_units=?,error_code=?,checkpoint_json=?,updated_at=? WHERE id=? AND status<>'cancelled'`, status, progress, message, stage, terminalOutcome, terminalOutcome, completedUnits, totalUnits, errorCode, string(checkpoint), stamp, id)
 	return err
 }
 
@@ -1488,7 +1629,7 @@ func (s *Store) ListJobs(ctx context.Context) ([]model.Job, error) {
 }
 
 func (s *Store) ListJobsFiltered(ctx context.Context, status, kind string) ([]model.Job, error) {
-	query := `SELECT id,kind,status,progress,message,origin_job_id,created_at,updated_at FROM jobs`
+	query := `SELECT id,kind,status,progress,message,stage,outcome,completed_units,total_units,error_code,origin_job_id,created_at,updated_at FROM jobs`
 	conditions := []string{}
 	args := []any{}
 	if strings.TrimSpace(status) != "" {
@@ -1512,7 +1653,7 @@ func (s *Store) ListJobsFiltered(ctx context.Context, status, kind string) ([]mo
 	for rows.Next() {
 		var item model.Job
 		var created, updated string
-		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Progress, &item.Message, &item.OriginJobID, &created, &updated); err != nil {
+		if err := rows.Scan(&item.ID, &item.Kind, &item.Status, &item.Progress, &item.Message, &item.Stage, &item.Outcome, &item.CompletedUnits, &item.TotalUnits, &item.ErrorCode, &item.OriginJobID, &created, &updated); err != nil {
 			return nil, err
 		}
 		item.CreatedAt, item.UpdatedAt = parseTime(created), parseTime(updated)
@@ -2224,4 +2365,40 @@ func (s *Store) ClaimJob(ctx context.Context, id string) (bool, error) {
 	}
 	count, err := result.RowsAffected()
 	return count == 1, err
+}
+
+// CaptureJobRun pins legacy task configuration before the first model call.
+func (s *Store) CaptureJobRun(ctx context.Context, id, contentHash string, run any) error {
+	data, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `UPDATE jobs SET payload_json=json_set(payload_json,'$.run',json(?),'$.contentHash',?) WHERE id=? AND json_extract(payload_json,'$.run') IS NULL`, string(data), contentHash, id)
+	return err
+}
+
+// GetJobPayload reads private replay configuration; never returned by the jobs API.
+func (s *Store) GetJobPayload(ctx context.Context, id string, target any) error {
+	var data string
+	if err := s.DB.QueryRowContext(ctx, `SELECT payload_json FROM jobs WHERE id=?`, id).Scan(&data); err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(data), target)
+}
+
+// EnsureReviewJob closes the draft/queue crash gap using a submission-scoped ID.
+// Existing jobs (including completed jobs) must not be dispatched a second time.
+func (s *Store) EnsureReviewJob(ctx context.Context, submissionID string) (string, bool, error) {
+	id := "import-review:" + submissionID
+	payload, err := json.Marshal(map[string]string{"submissionId": submissionID})
+	if err != nil {
+		return "", false, err
+	}
+	_, stamp := now()
+	result, err := s.DB.ExecContext(ctx, `INSERT INTO jobs(id,kind,status,progress,message,payload_json,origin_job_id,created_at,updated_at) SELECT ?,'kah_knowledge_review','queued',0,'',?,'',?,? WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE kind='kah_knowledge_review' AND json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END,'$.submissionId')=?) ON CONFLICT(id) DO NOTHING`, id, string(payload), stamp, stamp, submissionID)
+	if err != nil {
+		return "", false, err
+	}
+	count, err := result.RowsAffected()
+	return id, count == 1, err
 }

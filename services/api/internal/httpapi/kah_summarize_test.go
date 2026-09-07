@@ -91,6 +91,11 @@ func TestImportedDocumentSummaryReviewAndPublishUsesKAHWorkflow(t *testing.T) {
 			t.Fatal(listErr)
 		}
 		if summaryDone && len(items) == 1 && items[0].ReviewStatus == "published" {
+			for _, job := range jobs {
+				if job.ID == summaryJob.ID && (job.Stage != "completed" || job.Outcome != "completed" || job.CompletedUnits != 1 || job.TotalUnits != 1) {
+					t.Fatalf("summary checkpoint did not reach terminal state: %+v", job)
+				}
+			}
 			if len(items[0].Reviews) != 1 || items[0].Reviews[0].ReviewerType != "model" || items[0].Reviews[0].Decision != "approve" {
 				t.Fatalf("KAH model review was not recorded: %+v", items[0].Reviews)
 			}

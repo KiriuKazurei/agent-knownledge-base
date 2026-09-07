@@ -130,6 +130,16 @@ paths:
           schema: {type: string, format: uuid}
       responses:
         '204': {description: Moved to Trash; the document is excluded from retrieval and indexing}
+  /ocr/health:
+    get:
+      operationId: getOcrHealth
+      responses:
+        '200':
+          description: Local OCR resource health
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OcrHealth'}
+        '503': {description: OCR worker unavailable}
   /skills:
     get:
       operationId: listSkills
@@ -628,6 +638,133 @@ paths:
       responses:
         '204': {description: Deleted}
 
+  /graph:
+    get:
+      operationId: getRelationshipGraph
+      parameters:
+        - in: query
+          name: libraryId
+          required: true
+          schema: {type: string, format: uuid}
+        - in: query
+          name: workspaceId
+          schema: {type: string, format: uuid}
+        - in: query
+          name: centerNodeId
+          schema: {type: string}
+        - in: query
+          name: depth
+          schema: {type: integer, minimum: 1, maximum: 2, default: 1}
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 300, default: 250}
+      responses:
+        '200':
+          description: Stable knowledge relationship graph scoped to one library
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GraphSnapshot'}
+  /graph/workspaces:
+    post:
+      operationId: createGraphWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [libraryId]
+              properties:
+                libraryId: {type: string, format: uuid}
+                name: {type: string, maxLength: 120, default: 默认图谱}
+      responses:
+        '201':
+          description: Created graph workspace
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GraphWorkspace'}
+  /graph/workspaces/{workspaceId}:
+    parameters:
+      - in: path
+        name: workspaceId
+        required: true
+        schema: {type: string, format: uuid}
+    patch:
+      operationId: updateGraphWorkspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateGraphWorkspaceRequest'}
+      responses:
+        '200':
+          description: Updated graph workspace
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GraphWorkspace'}
+  /graph/workspaces/{workspaceId}/positions:
+    parameters:
+      - in: path
+        name: workspaceId
+        required: true
+        schema: {type: string, format: uuid}
+    put:
+      operationId: saveGraphPositions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [positions]
+              properties:
+                positions:
+                  type: array
+                  maxItems: 300
+                  items: {$ref: '#/components/schemas/GraphPositionUpdate'}
+      responses:
+        '200':
+          description: Atomically saved normalized fractional percentage positions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [positions]
+                properties:
+                  positions:
+                    type: array
+                    items: {$ref: '#/components/schemas/GraphPositionUpdate'}
+  /graph/workspaces/{workspaceId}/auto-layout:
+    parameters:
+      - in: path
+        name: workspaceId
+        required: true
+        schema: {type: string, format: uuid}
+    post:
+      operationId: autoLayoutGraph
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [libraryId]
+              properties:
+                libraryId: {type: string, format: uuid}
+                overwrite: {type: boolean, default: false}
+      responses:
+        '200':
+          description: Deterministic percentage positions for missing or all visible nodes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [positions]
+                properties:
+                  positions:
+                    type: array
+                    items: {$ref: '#/components/schemas/GraphPositionUpdate'}
+
   /knowledge/search:
     post:
       operationId: searchKnowledge
@@ -896,9 +1033,21 @@ components:
         status: {const: ok}
         version: {type: string}
         worker: {type: string}
+    OcrHealth:
+      type: object
+      required: [available, code]
+      properties:
+        available: {type: boolean}
+        resourcesVerified: {type: boolean}
+        engineReady: {type: boolean}
+        code: {type: string}
+        message: {type: string}
+        schema: {type: string}
+        version: {type: string}
+        fileCount: {type: integer, minimum: 0}
     Library:
       type: object
-      required: [id, name, icon, color, tags, favorite, allowRemoteModels, autoSummarizeImports, autoReviewAgentSubmissions, createdAt, updatedAt]
+      required: [id, name, icon, color, tags, favorite, allowRemoteModels, autoSummarizeImports, importConversionMode, autoReviewAgentSubmissions, createdAt, updatedAt]
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
@@ -909,6 +1058,7 @@ components:
         favorite: {type: boolean}
         allowRemoteModels: {type: boolean}
         autoSummarizeImports: {type: boolean}
+        importConversionMode: {type: string, enum: [reference, enhanced, off]}
         summaryProviderId: {type: string, format: uuid}
         autoReviewAgentSubmissions: {type: boolean}
         reviewProviderId: {type: string, format: uuid}
@@ -932,6 +1082,7 @@ components:
         favorite: {type: boolean}
         allowRemoteModels: {type: boolean}
         autoSummarizeImports: {type: boolean}
+        importConversionMode: {type: string, enum: [reference, enhanced, off]}
         summaryProviderId: {type: string, format: uuid}
         autoReviewAgentSubmissions: {type: boolean}
         reviewProviderId: {type: string, format: uuid}
@@ -990,6 +1141,82 @@ components:
         statuses: {type: array, items: {enum: [stable]}, description: The directory currently exposes only the current stable revision of each knowledge item.}
         limit: {type: integer, minimum: 1, maximum: 100, default: 20}
         cursor: {type: string}
+    GraphPosition:
+      type: object
+      required: [xPct, yPct]
+      properties:
+        xPct: {type: number, minimum: 0, maximum: 100, description: Decimal percentage normalized to three fractional digits by the server.}
+        yPct: {type: number, minimum: 0, maximum: 100, description: Decimal percentage normalized to three fractional digits by the server.}
+    GraphPositionUpdate:
+      allOf:
+        - $ref: '#/components/schemas/GraphPosition'
+        - type: object
+          required: [nodeId]
+          properties:
+            nodeId: {type: string, minLength: 1}
+    GraphWorkspace:
+      type: object
+      required: [id, libraryId, name, filters, viewport, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        libraryId: {type: string, format: uuid}
+        name: {type: string}
+        filters: {type: object, additionalProperties: true}
+        viewport: {type: object, additionalProperties: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    UpdateGraphWorkspaceRequest:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        filters: {type: object, additionalProperties: true}
+        viewport: {type: object, additionalProperties: true}
+    GraphNode:
+      type: object
+      required: [id, kind, label, uri, tags, position]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [knowledge, document, external_source, tag_cluster]}
+        label: {type: string}
+        description: {type: string}
+        uri: {type: string}
+        revision: {type: integer, minimum: 1}
+        status: {type: string}
+        trust: {type: string}
+        tags: {type: array, items: {type: string}}
+        position:
+          anyOf:
+            - $ref: '#/components/schemas/GraphPosition'
+            - type: 'null'
+    GraphEdge:
+      type: object
+      required: [id, kind, relationType, source, target]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [relation, source, derivation, cluster]}
+        relationType: {type: string}
+        source: {type: string}
+        target: {type: string}
+        targetRevision: {type: integer, minimum: 1}
+        sourceId: {type: string}
+        locator: {type: object, additionalProperties: true}
+        snapshot: {type: object, additionalProperties: true}
+    GraphSnapshot:
+      type: object
+      required: [workspace, nodes, edges, truncated, hiddenNodeCount, limits]
+      properties:
+        workspace: {$ref: '#/components/schemas/GraphWorkspace'}
+        nodes: {type: array, items: {$ref: '#/components/schemas/GraphNode'}}
+        edges: {type: array, items: {$ref: '#/components/schemas/GraphEdge'}}
+        truncated: {type: boolean}
+        hiddenNodeCount: {type: integer, minimum: 0}
+        limits:
+          type: object
+          required: [requestedDepth, appliedDepth, maxNodes]
+          properties:
+            requestedDepth: {type: integer, minimum: 1}
+            appliedDepth: {type: integer, minimum: 1, maximum: 2}
+            maxNodes: {type: integer, minimum: 1, maximum: 300}
     KnowledgeDirectoryEntry:
       type: object
       required: [uri, revision, title, description, type, language, primaryPath, tags, matchedSectionIds, matchReason, flags, trust]
@@ -1239,6 +1466,11 @@ components:
         status: {enum: [queued, running, cancellation_requested, completed, failed, cancelled]}
         progress: {type: number, minimum: 0, maximum: 1}
         message: {type: string}
+        stage: {type: string, description: Current durable processing stage}
+        outcome: {type: string, enum: [completed, failed, cancelled, degraded, needs_review, reference_ready, enhanced_ready]}
+        completedUnits: {type: integer, minimum: 0}
+        totalUnits: {type: integer, minimum: 0}
+        errorCode: {type: string}
         originJobId: {type: string, format: uuid}
         canCancel: {type: boolean}
         canRetry: {type: boolean}

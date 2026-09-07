@@ -2,6 +2,7 @@ import hashlib
 import html
 import json
 import mimetypes
+import os
 import re
 import uuid
 from pathlib import Path
@@ -133,17 +134,138 @@ def _text_blocks(path):
     if buffer:
         blocks.append(("\n".join(buffer), {"kind": "text", "heading": current_heading, "lineStart": start_line, "lineEnd": len(lines) or 1}))
     return blocks
-def _pdf_blocks(path):
+def _render_pdf_page(pdf_document, page_index, scale=200 / 72):
+    """Render one PDF page without retaining the whole document in memory."""
+
+    page = pdf_document.get_page(page_index)
+    try:
+        bitmap = page.render(scale=scale)
+        try:
+            return bitmap.to_pil().copy()
+        finally:
+            close = getattr(bitmap, "close", None)
+            if close:
+                close()
+    finally:
+        close = getattr(page, "close", None)
+        if close:
+            close()
+
+
+def _ocr_pdf_page(pdf_document, page_index, engine):
+    from .ocr import recognize
+
+    image = _render_pdf_page(pdf_document, page_index)
+    try:
+        lines = recognize(engine, image)
+        if not lines:
+            # Only an actually rendered uniformly white page counts as blank.
+            # Empty OCR output alone never establishes completeness.
+            blank = False
+            if hasattr(image, "convert"):
+                gray = image.convert("L")
+                try:
+                    low, high = gray.getextrema()
+                    blank = low >= 248 and high - low <= 3
+                finally:
+                    gray.close()
+            return "", 1.0 if blank else 0.0, []
+    finally:
+        close = getattr(image, "close", None)
+        if close:
+            close()
+    lines.sort(key=lambda item: (
+        min((point[1] for point in item.get("box", []) if len(point) > 1), default=0),
+        min((point[0] for point in item.get("box", []) if point), default=0),
+    ))
+    text = "\n".join(item["text"] for item in lines).strip()
+    score = sum(item["score"] for item in lines) / len(lines)
+    return text, score, [item.get("box", []) for item in lines]
+
+
+def _pdf_blocks(path, ocr_mode="auto", ocr_engine=None):
+    if ocr_mode not in {"off", "auto", "force"}:
+        raise ValueError("ocr_mode must be off, auto, or force")
     from pypdf import PdfReader
+
     reader = PdfReader(str(path))
     blocks = []
-    for index, page in enumerate(reader.pages):
-        text = (page.extract_text() or "").strip()
-        if "\ufffd" in text or "\x00" in text:
-            raise UnicodeError("PDF text extraction produced replacement characters")
-        if text:
-            blocks.append((text, {"kind": "pdf", "page": index + 1}))
-    return blocks
+    ocr_pages = []
+    untrusted_pages = []
+    missing_pages = []
+    blank_pages = []
+    pdf_document = None
+    if ocr_mode != "off":
+        try:
+            import pypdfium2 as pdfium
+
+            pdf_document = pdfium.PdfDocument(str(path))
+        except ImportError as error:
+            pdf_document = None
+            if ocr_mode == "force":
+                from .ocr import OfflineOCRError
+
+                raise OfflineOCRError("pypdfium2 is not installed; offline PDF rendering is unavailable") from error
+        except Exception as error:
+            from .ocr import OfflineOCRError
+
+            raise OfflineOCRError(f"failed to open PDF for offline OCR: {error}") from error
+    try:
+        for index, page in enumerate(reader.pages):
+            text_error = None
+            try:
+                text = (page.extract_text() or "").strip()
+            except Exception as error:
+                text_error = error
+                text = ""
+            unsafe = "\ufffd" in text or "\x00" in text
+            # Images can contain the body even when a header has valid text.
+            has_images = bool(getattr(page, "images", []))
+            use_ocr = ocr_mode == "force" or not text or unsafe or has_images
+            if use_ocr and ocr_mode != "off":
+                if unsafe:
+                    untrusted_pages.append(index + 1)
+                if pdf_document is None:
+                    from .ocr import OfflineOCRError
+
+                    raise OfflineOCRError(
+                        f"PDF page {index + 1} requires OCR but pypdfium2 is not installed"
+                    )
+                if ocr_engine is None:
+                    from .ocr import get_ocr_engine
+
+                    ocr_engine = get_ocr_engine()
+                ocr_text, confidence, boxes = _ocr_pdf_page(pdf_document, index, ocr_engine)
+                if ocr_text:
+                    if confidence < 0.8:
+                        missing_pages.append(index + 1)
+                    ocr_pages.append(index + 1)
+                    blocks.append((ocr_text, {
+                        "kind": "pdf-ocr", "page": index + 1, "extraction": "ocr",
+                        "ocrConfidence": round(confidence, 4), "ocrBoxes": boxes,
+                    }))
+                    continue
+                if confidence == 1.0 and not unsafe and text_error is None:
+                    blank_pages.append(index + 1)
+                    continue
+                if unsafe:
+                    raise UnicodeError("PDF text extraction produced replacement characters and OCR returned no text")
+                missing_pages.append(index + 1)
+                continue
+            if text_error is not None:
+                raise ValueError(f"PDF page {index + 1} text extraction failed: {text_error}") from text_error
+            if not text or has_images:
+                missing_pages.append(index + 1)
+            if unsafe:
+                raise UnicodeError("PDF text extraction produced replacement characters")
+            if text:
+                blocks.append((text, {"kind": "pdf", "page": index + 1, "extraction": "pdf-text"}))
+    finally:
+        if pdf_document is not None:
+            close = getattr(pdf_document, "close", None)
+            if close:
+                close()
+    return blocks, {"ocrPages": ocr_pages, "untrustedPages": untrusted_pages, "pageCount": len(reader.pages), "missingPages": missing_pages, "blankPages": blank_pages, "status": "incomplete" if missing_pages else "complete"}
 def _docx_blocks(path):
     from docx import Document
     document = Document(str(path))
@@ -245,7 +367,7 @@ def _split(text, location, target=1200, overlap=120):
     return chunks
 
 
-def parse_document(path_value, document_id, media_type="", original_name=""):
+def parse_document(path_value, document_id, media_type="", original_name="", ocr_mode=None, ocr_engine=None):
     path = Path(path_value).resolve(strict=True)
     suffix = (Path(original_name).suffix or path.suffix).lower()
     if suffix in {".html", ".htm"} or "html" in media_type:
@@ -253,7 +375,9 @@ def parse_document(path_value, document_id, media_type="", original_name=""):
     elif suffix in TEXT_EXTENSIONS or media_type.startswith("text/"):
         blocks = _text_blocks(path)
     elif suffix == ".pdf":
-        blocks = _pdf_blocks(path)
+        if ocr_mode is None:
+            ocr_mode = os.environ.get("KAH_PDF_OCR_MODE", "auto").strip().lower() or "auto"
+        blocks, extraction = _pdf_blocks(path, ocr_mode, ocr_engine)
     elif suffix == ".docx":
         blocks = _docx_blocks(path)
     elif suffix == ".xlsx":
@@ -266,10 +390,15 @@ def parse_document(path_value, document_id, media_type="", original_name=""):
     chunks = []
     ordinal = 0
     for text, location in blocks:
-        for part, part_location in _split(text, location):
+        for part, part_location in _split(text, location, overlap=0):
             digest = hashlib.sha256(part.encode("utf-8")).hexdigest()
             stable = uuid.uuid5(uuid.NAMESPACE_URL, "{}:{}:{}".format(document_id, ordinal, digest))
             chunks.append({"id": str(stable), "text": part, "location": part_location, "contentHash": digest})
             ordinal += 1
     media = media_type or mimetypes.guess_type(original_name or path.name)[0] or "application/octet-stream"
-    return {"title": path.stem, "mediaType": media, "chunks": chunks}
+    result = {"title": path.stem, "mediaType": media, "chunks": chunks}
+    if suffix == ".pdf":
+        result["extraction"] = extraction
+        result["extraction"]["ocrMode"] = ocr_mode
+
+    return result

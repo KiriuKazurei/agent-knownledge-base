@@ -67,12 +67,28 @@ func TestHealthAndLibraryLifecycle(t *testing.T) {
 	if updated.Code != 200 || !bytes.Contains(updated.Body.Bytes(), []byte(`"name":"Knowledge Hub"`)) || !bytes.Contains(updated.Body.Bytes(), []byte(`"favorite":true`)) {
 		t.Fatalf("update metadata: %d %s", updated.Code, updated.Body.String())
 	}
+	mode := request(t, handler, "PATCH", "/api/v1/libraries/"+createdLibrary.ID, map[string]any{"importConversionMode": "off"}, "desktop-test")
+	if mode.Code != 200 || !bytes.Contains(mode.Body.Bytes(), []byte(`"importConversionMode":"off"`)) || !bytes.Contains(mode.Body.Bytes(), []byte(`"autoSummarizeImports":false`)) {
+		t.Fatalf("update conversion mode: %d %s", mode.Code, mode.Body.String())
+	}
+	conflict := request(t, handler, "PATCH", "/api/v1/libraries/"+createdLibrary.ID, map[string]any{"importConversionMode": "off", "autoSummarizeImports": true}, "desktop-test")
+	if conflict.Code != http.StatusBadRequest {
+		t.Fatalf("conflicting conversion mode update: %d %s", conflict.Code, conflict.Body.String())
+	}
 	listed := request(t, handler, "GET", "/api/v1/libraries", nil, "desktop-test")
 	if listed.Code != 200 {
 		t.Fatalf("list: %d", listed.Code)
 	}
 	if !bytes.Contains(listed.Body.Bytes(), []byte(`"icon":"book-open"`)) || !bytes.Contains(listed.Body.Bytes(), []byte(`"tags":["产品","内部"]`)) {
 		t.Fatalf("list metadata: %s", listed.Body.String())
+	}
+}
+
+func TestOcrHealthReportsUnavailableWorker(t *testing.T) {
+	_, handler := testServer(t)
+	response := request(t, handler, http.MethodGet, "/api/v1/ocr/health", nil, "desktop-test")
+	if response.Code != http.StatusServiceUnavailable || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"worker_unavailable"`)) {
+		t.Fatalf("OCR health response = %d %s", response.Code, response.Body.String())
 	}
 }
 

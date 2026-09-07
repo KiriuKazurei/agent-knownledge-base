@@ -1,4 +1,4 @@
-import type { AgentToken, AuditEntry, BackupRecord, BackupVerification, Document, DocumentBatchRequest, DocumentBatchResult, DocumentDetail, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SkillMappingTarget, SourceWatch, TrashEntry, VirtualFolder } from './types'
+import type { AgentToken, AuditEntry, BackupRecord, BackupVerification, Document, DocumentBatchRequest, DocumentBatchResult, DocumentDetail, GraphPositionUpdate, GraphSnapshot, GraphWorkspace, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SkillMappingTarget, SourceWatch, TrashEntry, VirtualFolder } from './types'
 
 let runtime: RuntimeConfig | undefined
 export async function getRuntime(): Promise<RuntimeConfig> { runtime ??= await window.kah.runtimeConfig(); return runtime }
@@ -81,6 +81,11 @@ export const client = {
   createSavedSearch: (name: string, query: string, libraryIds: string[] = [], tags: string[] = [], view: SavedSearch['view'] = 'knowledge', filters: SavedSearch['filters'] = { tags, tagMode: 'all', favorite: false }, sort: SavedSearch['sort'] = { field: 'updatedAt', direction: 'desc' }) => api<SavedSearch>('/saved-searches', { method: 'POST', body: JSON.stringify({ name, query, view, libraryIds, tags, filters, sort }) }),
   updateSavedSearch: (id: string, input: Omit<SavedSearch, 'id'>) => api<SavedSearch>(`/saved-searches/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteSavedSearch: (id: string) => api<void>(`/saved-searches/${id}`, { method: 'DELETE' }),
+  graph: (libraryId: string, workspaceId = '', centerNodeId = '', depth = 1, limit = 250) => api<GraphSnapshot>('/graph?' + new URLSearchParams({ libraryId, ...(workspaceId ? { workspaceId } : {}), ...(centerNodeId ? { centerNodeId } : {}), depth: String(depth), limit: String(limit) }).toString()),
+  createGraphWorkspace: (libraryId: string, name = '默认图谱') => api<GraphWorkspace>('/graph/workspaces', { method: 'POST', body: JSON.stringify({ libraryId, name }) }),
+  updateGraphWorkspace: (id: string, patch: { name?: string; filters?: Record<string, unknown>; viewport?: Record<string, unknown> }) => api<GraphWorkspace>(`/graph/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  saveGraphPositions: (id: string, positions: GraphPositionUpdate[]) => api<{positions: GraphPositionUpdate[]}>(`/graph/workspaces/${id}/positions`, { method: 'PUT', body: JSON.stringify({ positions }) }),
+  autoLayoutGraph: (id: string, libraryId: string, overwrite = false) => api<{positions: GraphPositionUpdate[]}>(`/graph/workspaces/${id}/auto-layout`, { method: 'POST', body: JSON.stringify({ libraryId, overwrite }) }),
   knowledgeSearch: (query: string, libraryIds: string[] = []) => api<KnowledgeSearchResponse>('/knowledge/search', { method: 'POST', body: JSON.stringify({ query, libraryIds, limit: 20 }) }),
   knowledge: (uri: string) => api<KnowledgeRevision>('/knowledge/resolve?uri=' + encodeURIComponent(uri)),
   submissions: (libraryId?: string) => api<KAHSubmission[]>('/knowledge/submissions?' + new URLSearchParams({ ...(libraryId ? { libraryId } : {}) }).toString()),

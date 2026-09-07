@@ -5,6 +5,7 @@ import traceback
 
 from . import __version__
 from .index import HybridIndex
+from .ocr_resources import health_report
 from .parsers import parse_document
 
 
@@ -24,6 +25,7 @@ class RpcServer:
         self.index = HybridIndex(data_root)
         self.methods = {
             "health": self.health,
+            "ocr_health": self.ocr_health,
             "parse": self.parse,
             "index_upsert": self.index_upsert,
             "index_delete": self.index_delete,
@@ -34,8 +36,17 @@ class RpcServer:
     def health(self, _params):
         return {"status": "ok", "version": __version__, "indexBackend": self.index.backend}
 
+    def ocr_health(self, _params):
+        return health_report()
+
     def parse(self, params):
-        return parse_document(params["path"], params["documentId"], params.get("mediaType", ""), params.get("originalName", ""))
+        return parse_document(
+            params["path"],
+            params["documentId"],
+            params.get("mediaType", ""),
+            params.get("originalName", ""),
+            params.get("ocrMode"),
+        )
 
     def index_upsert(self, params):
         return self.index.upsert(params["libraryId"], params["documentId"], params.get("chunks", []))

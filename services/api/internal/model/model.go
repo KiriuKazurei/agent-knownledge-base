@@ -12,6 +12,7 @@ type Library struct {
 	Favorite                   bool       `json:"favorite"`
 	AllowRemoteModels          bool       `json:"allowRemoteModels"`
 	AutoSummarizeImports       bool       `json:"autoSummarizeImports"`
+	ImportConversionMode       string     `json:"importConversionMode"`
 	SummaryProviderID          string     `json:"summaryProviderId,omitempty"`
 	AutoReviewAgentSubmissions bool       `json:"autoReviewAgentSubmissions"`
 	ReviewProviderID           string     `json:"reviewProviderId,omitempty"`
@@ -185,16 +186,21 @@ type QueryResponse struct {
 }
 
 type Job struct {
-	ID          string    `json:"id"`
-	Kind        string    `json:"kind"`
-	Status      string    `json:"status"`
-	Progress    float64   `json:"progress"`
-	Message     string    `json:"message,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	OriginJobID string    `json:"originJobId,omitempty"`
-	CanCancel   bool      `json:"canCancel"`
-	CanRetry    bool      `json:"canRetry"`
+	ID             string    `json:"id"`
+	Kind           string    `json:"kind"`
+	Status         string    `json:"status"`
+	Progress       float64   `json:"progress"`
+	Message        string    `json:"message,omitempty"`
+	Stage          string    `json:"stage,omitempty"`
+	Outcome        string    `json:"outcome,omitempty"`
+	CompletedUnits int       `json:"completedUnits,omitempty"`
+	TotalUnits     int       `json:"totalUnits,omitempty"`
+	ErrorCode      string    `json:"errorCode,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+	OriginJobID    string    `json:"originJobId,omitempty"`
+	CanCancel      bool      `json:"canCancel"`
+	CanRetry       bool      `json:"canRetry"`
 }
 
 type ReviewRecord struct {

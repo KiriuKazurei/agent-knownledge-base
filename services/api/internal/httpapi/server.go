@@ -83,6 +83,11 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/skills/:id/files/*path", s.skillFile)
 	admin.POST("/knowledge/search", s.desktopKnowledgeSearch)
 	admin.GET("/knowledge/resolve", s.desktopKnowledgeGet)
+	admin.GET("/graph", s.getRelationshipGraph)
+	admin.POST("/graph/workspaces", s.createGraphWorkspace)
+	admin.PATCH("/graph/workspaces/:id", s.updateGraphWorkspace)
+	admin.PUT("/graph/workspaces/:id/positions", s.saveGraphPositions)
+	admin.POST("/graph/workspaces/:id/auto-layout", s.autoLayoutGraph)
 	admin.POST("/knowledge/submissions", s.createDesktopKnowledgeSubmission)
 	admin.GET("/knowledge/submissions", s.listKAHSubmissions)
 	admin.GET("/knowledge/submissions/:id", s.getKAHSubmission)
@@ -94,6 +99,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.DELETE("/libraries/:id", s.deleteLibrary)
 	admin.GET("/documents", s.listDocuments)
 	admin.GET("/documents/:id", s.getDocument)
+	admin.GET("/ocr/health", s.ocrHealth)
 	admin.PATCH("/documents/:id", s.updateDocument)
 	admin.POST("/documents/batch", s.batchDocuments)
 	admin.POST("/documents/:id/reindex", s.reindexDocument)
@@ -171,7 +177,7 @@ func cors() gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID")
-			c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		}
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -265,6 +271,19 @@ func bind(c *gin.Context, target any) bool {
 func (s *Server) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "version": s.Config.Version, "worker": s.Worker.State()})
 }
+
+func (s *Server) ocrHealth(c *gin.Context) {
+	if s.Worker == nil {
+		s.problem(c, http.StatusServiceUnavailable, "worker_unavailable", "Document worker is unavailable", true)
+		return
+	}
+	result := map[string]any{}
+	if err := s.Worker.Call(operationContext(c), "ocr_health", map[string]any{}, &result); err != nil {
+		s.problem(c, http.StatusServiceUnavailable, "ocr_health_failed", err.Error(), true)
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
 func (s *Server) listLibraries(c *gin.Context) {
 	items, err := s.Store.ListLibraries(c)
 	if err != nil {
@@ -298,6 +317,7 @@ func (s *Server) updateLibrary(c *gin.Context) {
 		Favorite                   *bool     `json:"favorite"`
 		AllowRemoteModels          *bool     `json:"allowRemoteModels"`
 		AutoSummarizeImports       *bool     `json:"autoSummarizeImports"`
+		ImportConversionMode       *string   `json:"importConversionMode"`
 		SummaryProviderID          *string   `json:"summaryProviderId"`
 		AutoReviewAgentSubmissions *bool     `json:"autoReviewAgentSubmissions"`
 		ReviewProviderID           *string   `json:"reviewProviderId"`
@@ -323,8 +343,25 @@ func (s *Server) updateLibrary(c *gin.Context) {
 		autoReview = *input.AutoReviewAgentSubmissions
 	}
 	autoSummarize := current.AutoSummarizeImports
-	if input.AutoSummarizeImports != nil {
+	conversionMode := current.ImportConversionMode
+	if input.ImportConversionMode != nil {
+		conversionMode = strings.TrimSpace(*input.ImportConversionMode)
+		if conversionMode != "reference" && conversionMode != "enhanced" && conversionMode != "off" {
+			s.problem(c, 400, "invalid_import_conversion_mode", "importConversionMode must be reference, enhanced, or off", false)
+			return
+		}
+		if input.AutoSummarizeImports != nil && *input.AutoSummarizeImports != (conversionMode == "enhanced") {
+			s.problem(c, 400, "conflicting_import_conversion_mode", "autoSummarizeImports conflicts with importConversionMode", false)
+			return
+		}
+		autoSummarize = conversionMode == "enhanced"
+	} else if input.AutoSummarizeImports != nil {
 		autoSummarize = *input.AutoSummarizeImports
+		if autoSummarize {
+			conversionMode = "enhanced"
+		} else {
+			conversionMode = "reference"
+		}
 	}
 	summaryProviderID := current.SummaryProviderID
 	if input.SummaryProviderID != nil {
@@ -375,6 +412,7 @@ func (s *Server) updateLibrary(c *gin.Context) {
 	item, err := s.Store.UpdateLibraryPatch(operationContext(c), c.Param("id"), storage.LibraryPatch{
 		Name: input.Name, Description: input.Description, Icon: input.Icon, Color: input.Color, Tags: input.Tags, Favorite: input.Favorite,
 		AllowRemoteModels: input.AllowRemoteModels, AutoSummarizeImports: input.AutoSummarizeImports,
+		ImportConversionMode:       input.ImportConversionMode,
 		AutoReviewAgentSubmissions: input.AutoReviewAgentSubmissions, SummaryProviderID: input.SummaryProviderID, ReviewProviderID: input.ReviewProviderID,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -397,6 +435,7 @@ func (s *Server) updateLibrary(c *gin.Context) {
 		"favorite":             item.Favorite,
 		"allowRemoteModels":    item.AllowRemoteModels,
 		"autoSummarizeImports": item.AutoSummarizeImports,
+		"importConversionMode": item.ImportConversionMode,
 	})
 	c.JSON(200, item)
 }
@@ -772,6 +811,10 @@ func (s *Server) updateTextContent(ctx context.Context, id, content string) erro
 }
 
 type parseResult struct {
+	Extraction struct {
+		Status       string `json:"status"`
+		MissingPages []int  `json:"missingPages"`
+	} `json:"extraction"`
 	Title     string `json:"title"`
 	MediaType string `json:"mediaType"`
 	Chunks    []struct {
@@ -918,6 +961,9 @@ func (s *Server) runFileImportContext(parent context.Context, jobID, libraryID, 
 	message := "Imported " + doc.Title
 	if summaryQueued {
 		message += "; KAH summary job " + summaryJob.ID + " queued"
+		if referenceCreated {
+			message += "; traceable reference fallback is awaiting review"
+		}
 	} else if referenceCreated {
 		message += "; KAH draft (reference) is awaiting review"
 	} else {
@@ -938,8 +984,11 @@ func (s *Server) createImportedDocumentDraft(ctx context.Context, documentID str
 	if err != nil {
 		return model.KAHSubmission{}, false, err
 	}
-	extract := importedReferenceExtract(detail.Preview, importedReferenceMaxRunes)
-	if extract == "" {
+	detail.Preview, err = s.loadAllDocumentChunks(ctx, detail.ID)
+	if err != nil {
+		return model.KAHSubmission{}, false, fmt.Errorf("load complete imported source: %w", err)
+	}
+	if importedReferenceExtract(detail.Preview, 1) == "" {
 		return model.KAHSubmission{}, false, nil
 	}
 	title := strings.TrimSpace(strings.TrimSuffix(detail.Title, filepath.Ext(detail.Title)))
@@ -947,21 +996,14 @@ func (s *Server) createImportedDocumentDraft(ctx context.Context, documentID str
 		title = "Imported source material"
 	}
 	title = trimRunes(title, 200)
-	language := importedReferenceLanguage(extract)
+	language := importedReferenceLanguage(importedReferenceExtract(detail.Preview, importedSummaryMaxRunes))
 	description := "Traceable reference draft created from imported source material. Review the original document before publishing."
-	heading := "Imported source material"
-	intro := "This reference preserves extracted material; it is not an AI summary. Review the cited source before publishing."
 	if language == "zh-CN" {
 		description = "由导入资料自动创建的可追溯参考草稿；发布前请核对原始文档。"
-		heading = "导入资料"
-		intro = "此参考条目保留导入资料的提取内容，不代表模型已完成总结；发布前请核对引用的原始资料。"
 	}
-	chunkIDs := make([]string, 0, min(8, len(detail.Preview)))
-	for _, chunk := range detail.Preview {
-		if len(chunkIDs) == cap(chunkIDs) {
-			break
-		}
-		chunkIDs = append(chunkIDs, chunk.ID)
+	sections := importedReferenceSections(detail.Preview, language)
+	if len(sections) == 0 {
+		return model.KAHSubmission{}, false, nil
 	}
 	payload := model.KnowledgePayload{
 		Schema:          storage.KAHKnowledgeSchema,
@@ -972,12 +1014,10 @@ func (s *Server) createImportedDocumentDraft(ctx context.Context, documentID str
 		Language:        language,
 		Tags:            []string{"imported-source", "reference"},
 		DuplicateIntent: "independent",
-		Sections: []model.KnowledgeSection{{
-			ID: "overview", Heading: heading, Content: intro + "[^source]\n\n" + extract,
-		}},
+		Sections:        sections,
 		Sources: []model.KnowledgeSource{{
 			ID: "source", Resource: storage.DocumentURI(detail.ID), Title: detail.Title,
-			Locator:  map[string]any{"documentId": detail.ID, "chunkIds": chunkIDs},
+			Locator:  map[string]any{"documentId": detail.ID, "chunkIds": importedChunkIDs(detail.Preview), "chunkCount": len(detail.Preview)},
 			Snapshot: model.KnowledgeSourceSnapshot{Status: "captured", ContentHash: detail.ContentHash, CapturedAt: time.Now().UTC()},
 		}},
 		Generated: model.KnowledgeGenerated{By: "desktop/import", At: time.Now().UTC()},
@@ -1044,13 +1084,19 @@ func trimRunes(value string, maximum int) string {
 func (s *Server) parseDocument(ctx context.Context, doc model.Document, path string) ([]model.Chunk, error) {
 	if s.Worker != nil {
 		var result parseResult
-		err := s.Worker.Call(ctx, "parse", map[string]any{"path": path, "documentId": doc.ID, "mediaType": doc.MediaType, "originalName": doc.SourcePath}, &result)
+		err := s.Worker.Call(ctx, "parse", map[string]any{"path": path, "documentId": doc.ID, "mediaType": doc.MediaType, "originalName": doc.SourcePath, "ocrMode": "auto"}, &result)
 		if err == nil {
+			if result.Extraction.Status != "" && result.Extraction.Status != "complete" {
+				return nil, fmt.Errorf("ocr_extraction_incomplete: unresolved PDF pages %v", result.Extraction.MissingPages)
+			}
 			chunks := make([]model.Chunk, 0, len(result.Chunks))
 			for _, value := range result.Chunks {
 				chunks = append(chunks, model.Chunk{ID: value.ID, DocumentID: doc.ID, Text: value.Text, Location: value.Location, ContentHash: value.ContentHash})
 			}
 			return chunks, nil
+		}
+		if !(strings.HasPrefix(doc.MediaType, "text/") || isCode(doc.SourcePath)) {
+			return nil, fmt.Errorf("document extraction failed: %w", err)
 		}
 	}
 	if strings.HasPrefix(doc.MediaType, "text/") || isCode(doc.SourcePath) {
@@ -1129,9 +1175,49 @@ func mediaTypeFor(path string) string {
 	return "application/octet-stream"
 }
 func (s *Server) failJob(ctx context.Context, id string, err error) {
-	_ = s.Store.UpdateJob(ctx, id, "failed", 0, err.Error())
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	message := err.Error()
+	checkpoint, checkpointErr := s.Store.GetJobCheckpoint(ctx, id)
+	if checkpointErr == nil {
+		stage := checkpoint.Stage
+		if stage == "" {
+			stage = "error"
+		}
+		if updateErr := s.Store.UpdateJobCheckpoint(ctx, id, "failed", stage, 0, checkpoint.CompletedUnits, checkpoint.TotalUnits, "failed", jobErrorCode(message), message, checkpoint.Data); updateErr == nil {
+			if s.Logger != nil {
+				s.Logger.Error("job failed", "jobId", id, "error", err)
+			}
+			return
+		}
+	}
+	if persistErr := s.Store.UpdateJob(ctx, id, "failed", 0, message); persistErr != nil && s.Logger != nil {
+		s.Logger.Error("persist job failure", "jobId", id, "error", persistErr)
+	}
 	if s.Logger != nil {
 		s.Logger.Error("job failed", "jobId", id, "error", err)
+	}
+}
+
+func jobErrorCode(message string) string {
+	value := strings.ToLower(strings.TrimSpace(message))
+	switch {
+	case strings.Contains(value, "ocr_extraction_incomplete"):
+		return "ocr_extraction_incomplete"
+	case strings.Contains(value, "ocr") && strings.Contains(value, "model"):
+		return "ocr_model_missing"
+	case strings.Contains(value, "worker") && strings.Contains(value, "unavailable"):
+		return "worker_unavailable"
+	case strings.Contains(value, "summary batch"):
+		return "summary_batch_failed"
+	case strings.Contains(value, "provider"):
+		return "provider_failed"
+	case strings.Contains(value, "source") && strings.Contains(value, "changed"):
+		return "source_changed"
+	case strings.Contains(value, "invalid") || strings.Contains(value, "decode"):
+		return "invalid_output"
+	default:
+		return "job_failed"
 	}
 }
 
