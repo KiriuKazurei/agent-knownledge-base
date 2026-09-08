@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -433,7 +434,7 @@ func importedReferenceSections(chunks []model.Chunk, language string) []model.Kn
 		buffer.Reset()
 	}
 	for _, chunk := range chunks {
-		text := strings.TrimSpace(chunk.Text)
+		text := strings.TrimSpace(importedReferenceChunkText(chunk, language))
 		for len([]rune(text)) > importedReferenceSectionRunes {
 			partText := string([]rune(text)[:importedReferenceSectionRunes])
 			if len([]rune(buffer.String()))+len([]rune(partText)) > importedReferenceSectionRunes {
@@ -456,6 +457,140 @@ func importedReferenceSections(chunks []model.Chunk, language string) []model.Kn
 	}
 	flush()
 	return sections
+}
+
+// importedReferenceChunkText preserves the raw extraction and supplements it
+// only with layout facts already carried by the Worker.  In particular, a
+// recovered OCR table is rendered as Markdown so reviewers can verify the
+// actual row-to-column association without an Agent-generated interpretation.
+func importedReferenceChunkText(chunk model.Chunk, language string) string {
+	text := strings.TrimSpace(chunk.Text)
+	if text == "" {
+		return ""
+	}
+	var builder strings.Builder
+	if page, ok := importedReferencePage(chunk.Location["page"]); ok {
+		heading := "Page"
+		if language == "zh-CN" {
+			heading = "第"
+			builder.WriteString("#### ")
+			builder.WriteString(heading)
+			builder.WriteString(strconv.Itoa(page))
+			builder.WriteString("页\n\n")
+		} else {
+			builder.WriteString("#### ")
+			builder.WriteString(heading)
+			builder.WriteByte(' ')
+			builder.WriteString(strconv.Itoa(page))
+			builder.WriteString("\n\n")
+		}
+	}
+	builder.WriteString(text)
+	for _, table := range importedReferenceTables(chunk.Location) {
+		builder.WriteString("\n\n")
+		if language == "zh-CN" {
+			builder.WriteString("#### 按 OCR 坐标恢复的表格（发布前请核对原件）\n\n")
+		} else {
+			builder.WriteString("#### Table recovered from OCR coordinates (verify against the source before publishing)\n\n")
+		}
+		builder.WriteString("| ")
+		builder.WriteString(strings.Join(importedReferenceMarkdownCells(table.headers), " | "))
+		builder.WriteString(" |\n| ")
+		builder.WriteString(strings.TrimRight(strings.Repeat("--- | ", len(table.headers)), " "))
+		builder.WriteByte('\n')
+		for _, row := range table.rows {
+			builder.WriteString("| ")
+			builder.WriteString(strings.Join(importedReferenceMarkdownCells(row), " | "))
+			builder.WriteString(" |\n")
+		}
+	}
+	return builder.String()
+}
+
+type importedReferenceTable struct {
+	headers []string
+	rows    [][]string
+}
+
+func importedReferencePage(value any) (int, bool) {
+	switch page := value.(type) {
+	case int:
+		return page, page > 0
+	case int64:
+		return int(page), page > 0
+	case float64:
+		return int(page), page > 0 && page == float64(int(page))
+	default:
+		return 0, false
+	}
+}
+
+func importedReferenceTables(location map[string]any) []importedReferenceTable {
+	layout, ok := location["ocrLayout"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	values, ok := layout["tables"].([]any)
+	if !ok {
+		return nil
+	}
+	tables := make([]importedReferenceTable, 0, len(values))
+	for _, value := range values {
+		table, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		headers := importedReferenceStringSlice(table["headers"])
+		rowValues, ok := table["rows"].([]any)
+		if len(headers) == 0 || !ok {
+			continue
+		}
+		rows := make([][]string, 0, len(rowValues))
+		valid := true
+		for _, rowValue := range rowValues {
+			row := importedReferenceStringSlice(rowValue)
+			if len(row) != len(headers) {
+				valid = false
+				break
+			}
+			rows = append(rows, row)
+		}
+		if valid && len(rows) > 0 {
+			tables = append(tables, importedReferenceTable{headers: headers, rows: rows})
+		}
+	}
+	return tables
+}
+
+func importedReferenceStringSlice(value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return append([]string(nil), values...)
+	case []any:
+		items := make([]string, 0, len(values))
+		for _, item := range values {
+			text, ok := item.(string)
+			if !ok || strings.TrimSpace(text) == "" {
+				return nil
+			}
+			items = append(items, text)
+		}
+		return items
+	default:
+		return nil
+	}
+}
+
+func importedReferenceMarkdownCells(values []string) []string {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		cell := strings.TrimSpace(value)
+		cell = strings.ReplaceAll(cell, "\\", "\\\\")
+		cell = strings.ReplaceAll(cell, "|", "\\|")
+		cell = strings.ReplaceAll(cell, "\n", "<br>")
+		items = append(items, cell)
+	}
+	return items
 }
 
 func importedSummaryBatches(chunks []model.Chunk, maximum int) [][]model.Chunk {

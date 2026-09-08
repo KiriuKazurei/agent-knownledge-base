@@ -130,6 +130,59 @@ paths:
           schema: {type: string, format: uuid}
       responses:
         '204': {description: Moved to Trash; the document is excluded from retrieval and indexing}
+  /plugins/ocr:
+    get:
+      operationId: getOcrPlugin
+      responses:
+        '200':
+          description: Managed OCR plugin state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OcrPlugin'}
+    patch:
+      operationId: setOcrPluginEnabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: {type: boolean}
+      responses:
+        '200':
+          description: Updated OCR plugin state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OcrPlugin'}
+    delete:
+      operationId: uninstallOcrPlugin
+      responses:
+        '200':
+          description: OCR resources removed; existing documents preserved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OcrPlugin'}
+  /plugins/ocr/install:
+    post:
+      operationId: installOcrPlugin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Local OCR resource package verified and installed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OcrPlugin'}
+        '400': {description: Invalid package or installation failed}
   /ocr/health:
     get:
       operationId: getOcrHealth
@@ -1033,6 +1086,16 @@ components:
         status: {const: ok}
         version: {type: string}
         worker: {type: string}
+    OcrPlugin:
+      type: object
+      required: [id, name, installed, enabled, version, sizeBytes]
+      properties:
+        id: {type: string, enum: [ocr]}
+        name: {type: string}
+        installed: {type: boolean}
+        enabled: {type: boolean}
+        version: {type: string}
+        sizeBytes: {type: integer, minimum: 0}
     OcrHealth:
       type: object
       required: [available, code]

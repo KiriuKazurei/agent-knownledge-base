@@ -1,0 +1,5 @@
+.ocr-plugin-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+.ocr-plugin-settings button { min-height: 44px; padding: 10px 16px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface-muted); color: var(--text); }
+.ocr-plugin-settings button:hover:not(:disabled) { background: var(--surface-hover); }
+.ocr-plugin-settings button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.ocr-plugin-settings [role="alert"] { overflow-wrap: anywhere; }

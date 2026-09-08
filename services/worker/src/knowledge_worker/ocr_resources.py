@@ -104,7 +104,11 @@ def verify_resource_directory(root_value: str | os.PathLike[str]) -> dict[str, A
 def health_report() -> dict[str, Any]:
     """Return a safe, non-throwing resource health response for RPC callers."""
 
-    configured = os.environ.get("KAH_OCR_MODEL_DIR", "").strip()
+    from .ocr_plugin import active_model_root
+    try:
+        configured = active_model_root()
+    except RuntimeError as error:
+        return {"available": False, "code": "ocr_plugin_disabled", "message": str(error)}
     if not configured:
         return {"available": False, "code": "model_dir_missing", "message": "KAH_OCR_MODEL_DIR is not configured"}
     try:

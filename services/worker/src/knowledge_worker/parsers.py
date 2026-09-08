@@ -153,7 +153,7 @@ def _render_pdf_page(pdf_document, page_index, scale=200 / 72):
 
 
 def _ocr_pdf_page(pdf_document, page_index, engine):
-    from .ocr import recognize
+    from .ocr import order_reading_lines, recognize
 
     image = _render_pdf_page(pdf_document, page_index)
     try:
@@ -170,17 +170,28 @@ def _ocr_pdf_page(pdf_document, page_index, engine):
                 finally:
                     gray.close()
             return "", 1.0 if blank else 0.0, []
+        image_size = getattr(image, "size", None)
+        if not isinstance(image_size, tuple) or len(image_size) != 2:
+            image_size = None
+        lines, layout = order_reading_lines(lines, image_size)
     finally:
         close = getattr(image, "close", None)
         if close:
             close()
-    lines.sort(key=lambda item: (
-        min((point[1] for point in item.get("box", []) if len(point) > 1), default=0),
-        min((point[0] for point in item.get("box", []) if point), default=0),
-    ))
     text = "\n".join(item["text"] for item in lines).strip()
     score = sum(item["score"] for item in lines) / len(lines)
-    return text, score, [item.get("box", []) for item in lines]
+    return text, score, [item.get("box", []) for item in lines], {
+        **layout,
+        "lines": [
+            {
+                "text": item["text"],
+                "score": round(float(item["score"]), 4),
+                "box": item.get("box", []),
+                **({"column": item["column"]} if "column" in item else {}),
+            }
+            for item in lines
+        ],
+    }
 
 
 def _pdf_blocks(path, ocr_mode="auto", ocr_engine=None):
@@ -235,7 +246,9 @@ def _pdf_blocks(path, ocr_mode="auto", ocr_engine=None):
                     from .ocr import get_ocr_engine
 
                     ocr_engine = get_ocr_engine()
-                ocr_text, confidence, boxes = _ocr_pdf_page(pdf_document, index, ocr_engine)
+                ocr_result = _ocr_pdf_page(pdf_document, index, ocr_engine)
+                ocr_text, confidence, boxes = ocr_result[:3]
+                layout = ocr_result[3] if len(ocr_result) > 3 else {"mode": "row-major", "columnCount": 1}
                 if ocr_text:
                     if confidence < 0.8:
                         missing_pages.append(index + 1)
@@ -243,6 +256,7 @@ def _pdf_blocks(path, ocr_mode="auto", ocr_engine=None):
                     blocks.append((ocr_text, {
                         "kind": "pdf-ocr", "page": index + 1, "extraction": "ocr",
                         "ocrConfidence": round(confidence, 4), "ocrBoxes": boxes,
+                        "ocrLayout": layout,
                     }))
                     continue
                 if confidence == 1.0 and not unsafe and text_error is None:

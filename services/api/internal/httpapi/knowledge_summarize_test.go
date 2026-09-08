@@ -31,6 +31,31 @@ func TestImportedReferenceSectionsCoverLongSourceInOrder(t *testing.T) {
 	}
 }
 
+func TestImportedReferenceSectionsRenderRetainedOCRTable(t *testing.T) {
+	chunks := []model.Chunk{{
+		Text: "表格原始文本仍需保留。",
+		Location: map[string]any{
+			"page": float64(2),
+			"ocrLayout": map[string]any{"tables": []any{map[string]any{
+				"headers": []any{"编号", "状态"},
+				"rows":    []any{[]any{"T01", "通过"}, []any{"T02", "复核"}},
+			}}},
+		},
+	}}
+	sections := importedReferenceSections(chunks, "zh-CN")
+	if len(sections) != 1 {
+		t.Fatalf("sections = %#v", sections)
+	}
+	content := sections[0].Content
+	for _, expected := range []string{
+		"表格原始文本仍需保留。", "#### 第2页", "按 OCR 坐标恢复的表格", "| 编号 | 状态 |", "| T01 | 通过 |", "| T02 | 复核 |", "[^source]",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Fatalf("structured OCR reference lost %q: %s", expected, content)
+		}
+	}
+}
+
 func TestImportedSummaryBatchesCoverAllSourceText(t *testing.T) {
 	text := strings.Repeat("甲", importedSummaryMaxRunes+17)
 	batches := importedSummaryBatches([]model.Chunk{{ID: "source", Text: text}}, importedSummaryMaxRunes)

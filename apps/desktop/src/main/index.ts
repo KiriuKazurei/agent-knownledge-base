@@ -112,6 +112,20 @@ function startBackend(): void {
   })
 }
 
+function backendPortOwnershipHint(): string {
+  if (process.platform !== 'win32') return ''
+  try {
+    const output = execFileSync('netstat.exe', ['-ano', '-p', 'tcp'], { windowsHide: true, encoding: 'utf8' })
+    const listeners = output.split(/\r?\n/)
+      .filter((line) => line.includes(`:${API_PORT}`) && /LISTENING/i.test(line))
+      .map((line) => line.trim().split(/\s+/).at(-1))
+      .filter((pid): pid is string => Boolean(pid && /^\d+$/.test(pid)))
+    return listeners.length > 0 ? ` Listener PID: ${listeners.join(', ')}.` : ''
+  } catch {
+    return ''
+  }
+}
+
 function backupCandidatePath(relativePath: string): string {
   const normalized = path.normalize(relativePath)
   if (path.isAbsolute(normalized) || normalized.startsWith(`..${path.sep}`) || !normalized.startsWith(`backups${path.sep}`) || !normalized.endsWith('.kahbackup')) throw new Error('备份路径必须位于受控 backups 目录')
@@ -180,6 +194,7 @@ async function waitForBackend(): Promise<void> {
   const startedAt = Date.now()
   const deadline = startedAt + BACKEND_START_TIMEOUT_MS
   let lastError: unknown
+  let sessionConflict: string | undefined
   while (Date.now() < deadline) {
     try {
       const health = await fetch('http://127.0.0.1:' + API_PORT + '/api/v1/health')
@@ -188,6 +203,10 @@ async function waitForBackend(): Promise<void> {
           headers: { Authorization: 'Bearer ' + desktopToken }
         })
         if (authenticated.ok) return
+        if (authenticated.status === 401) {
+          sessionConflict = `A different KAH backend is already responding on port ${API_PORT} and rejected this desktop session token.${backendPortOwnershipHint()} Expected data root: ${dataRoot()}. Close the other KAH session, then start this session again.`
+          break
+        }
         lastError = new Error('Backend rejected the current desktop token: ' + authenticated.status)
       } else {
         lastError = new Error('Backend health returned ' + health.status)
@@ -195,6 +214,7 @@ async function waitForBackend(): Promise<void> {
     } catch (error) { lastError = error }
     await new Promise((resolve) => setTimeout(resolve, BACKEND_RETRY_INTERVAL_MS))
   }
+  if (sessionConflict) throw new Error(sessionConflict)
   const elapsedSeconds = Math.round((Date.now() - startedAt) / 1000)
   throw new Error(`Backend did not become healthy within ${elapsedSeconds}s for this desktop session: ${String(lastError ?? 'timeout')}`)
 }
@@ -243,7 +263,9 @@ app.whenReady().then(async () => {
   ipcMain.handle('dialog:select-files', async (_event, kind: string = 'knowledge') => {
     const filters = kind === 'skill-markdown'
       ? [{ name: 'Skill Markdown', extensions: ['md'] }, { name: 'All files', extensions: ['*'] }]
-      : kind === 'skill-zip'
+      : kind === 'ocr-plugin'
+        ? [{ name: 'OCR plugin packages', extensions: ['zip'] }]
+        : kind === 'skill-zip'
         ? [{ name: 'Skill packages', extensions: ['zip'] }, { name: 'All files', extensions: ['*'] }]
         : [{ name: 'Knowledge files', extensions: ['md','markdown','txt','pdf','doc','docx','xls','xlsx','xlsm','ppt','pptx','html','htm','go','py','js','jsx','ts','tsx','java','cs','rs','cpp','c','h','json','yaml','yml','toml','xml','sql','sh','ps1'] }, { name: 'All files', extensions: ['*'] }]
     const result = await dialog.showOpenDialog({

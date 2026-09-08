@@ -1,0 +1,76 @@
+{
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.14.7",
+  "dependencies": {
+    "rapidocr": "3.9.2",
+    "onnxruntime": "1.29.0",
+    "pypdfium2": "4.30.0",
+    "pypdf": "6.17.0",
+    "numpy": "2.5.3",
+    "pillow": "12.3.0",
+    "opencv-python": "5.0.0.93"
+  },
+  "plugin": {
+    "id": "ocr",
+    "name": "离线 PDF OCR",
+    "installed": true,
+    "enabled": true,
+    "version": "rapidocr-github-ppocrv4-3.0.0",
+    "sizeBytes": 16227637
+  },
+  "networkBlocked": true,
+  "expectedLines": [
+    "知识库离线文字识别测试",
+    "扫描文件转换为可追溯知识",
+    "安装和卸载不会删除原始资料",
+    "Offline OCR verification 2026",
+    "Total 12345.67"
+  ],
+  "cases": [
+    {
+      "file": "scan.pdf",
+      "seconds": 3.807,
+      "text": "知识库离线文字识别测试\n扫描文件转换为可追溯知识\n安装和卸载不会删除原始资料\nOffline OCR verification 2026\nTotal12345.67",
+      "extraction": {
+        "ocrPages": [
+          1
+        ],
+        "untrustedPages": [],
+        "pageCount": 1,
+        "missingPages": [],
+        "blankPages": [],
+        "status": "complete",
+        "ocrMode": "auto"
+      },
+      "missingLines": []
+    },
+    {
+      "file": "mixed.pdf",
+      "seconds": 2.717,
+      "text": "KAHHEADER\n知识库离线文字识别测试\n扫描文件转换为可追溯知识\n安装和卸载不会删除原始资料\nOffline OCR verification 2026\nTotal12345.67",
+      "extraction": {
+        "ocrPages": [
+          1
+        ],
+        "untrustedPages": [],
+        "pageCount": 1,
+        "missingPages": [],
+        "blankPages": [],
+        "status": "complete",
+        "ocrMode": "auto"
+      },
+      "missingLines": []
+    }
+  ],
+  "coldInitSeconds": 2.48,
+  "health": {
+    "available": true,
+    "resourcesVerified": true,
+    "engineReady": true,
+    "code": "ready",
+    "schema": "kah-ocr-resource/v1",
+    "version": "rapidocr-github-ppocrv4-3.0.0",
+    "fileCount": 4
+  },
+  "lifecycle": "disable-enable-uninstall-reinstall passed"
+}

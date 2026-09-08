@@ -104,6 +104,16 @@ test('opens the relationship graph as a first-class workspace and keeps the sele
   expect(client.graph).toHaveBeenCalledWith('graph-library', '', '', 1)
 })
 
+test('explains how to continue when opening the graph before any library exists', async () => {
+  vi.mocked(client.libraries).mockResolvedValue([])
+  render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
+  fireEvent.click(screen.getByRole('button', { name: /关系图谱稳定知识与证据关系/ }))
+  expect(await screen.findByRole('region', { name: '关系图谱' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: '请先选择或创建知识库' })).toBeInTheDocument()
+  fireEvent.click(screen.getByRole('button', { name: '从关系图谱新建知识库' }))
+  expect(await screen.findByRole('dialog')).toHaveTextContent('新建知识库')
+})
+
 test('edits library name, mark, tags, color, and icon from library details', async () => {
   const timestamp = new Date().toISOString()
   const library = { id: 'library-edit', name: '待编辑知识库', description: '旧描述', icon: 'library', color: 'jade', tags: ['旧标签'], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, summaryProviderId: '', autoReviewAgentSubmissions: false, createdAt: timestamp, updatedAt: timestamp }

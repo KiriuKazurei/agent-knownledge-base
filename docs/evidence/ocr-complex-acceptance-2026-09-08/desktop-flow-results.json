@@ -1,0 +1,38 @@
+{
+  "window": {
+    "title": "Knowledge Agent Hub",
+    "pid": 38020,
+    "hwnd": 8263910,
+    "className": "Chrome_WidgetWin_1",
+    "visible": true
+  },
+  "nativeFileDialog": {
+    "title": "打开",
+    "className": "#32770",
+    "ownerPid": 38020
+  },
+  "import": {
+    "jobId": "41563d82-26fc-4837-b9b9-5106f3074048",
+    "jobStatus": "completed",
+    "documentId": "3de8f1d1-36f1-4c58-ae7f-82d7e9f7ccf3",
+    "documentStatus": "ready",
+    "chunkCount": 4,
+    "contentHash": "26b792d2e9f6e0300c837c4d216b01e8ad8ea54b4d6810fe5b6dc9517edd658d"
+  },
+  "kahSubmission": {
+    "submissionId": "344dbc04-925b-4ffc-a07b-d64090f10ffc",
+    "knowledgeUri": "kah://knowledge/0b9921c6-2930-419b-ad60-1e13b558d430",
+    "sourceUri": "kah://document/3de8f1d1-36f1-4c58-ae7f-82d7e9f7ccf3",
+    "reviewStatus": "pending_review",
+    "validationValid": true,
+    "errors": [],
+    "warnings": []
+  },
+  "afterUninstall": {
+    "pluginInstalled": false,
+    "pluginEnabled": false,
+    "pluginSizeBytes": 0,
+    "documentStatus": "ready",
+    "submissionStatus": "pending_review"
+  }
+}

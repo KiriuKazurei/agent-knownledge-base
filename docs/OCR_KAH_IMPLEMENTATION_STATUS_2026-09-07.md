@@ -1,12 +1,14 @@
 # OCR 与原始知识到 KAH 实施状态
 
+> 2026-09-08 更新：已完成可卸载 OCR 资源插件、真实扫描/混合 PDF 识别及无 Agent 导入 KAH 链验证，见 [实际验证记录](OCR_PLUGIN_AND_REAL_VALIDATION_2026-09-08.md)。复杂版式的双栏与规则表格已由真实本地模型回归为 10/10，并已进入结构化 KAH 草稿；本轮模块记录见 [双栏](OCR_COLUMN_LAYOUT_MODULE_REVIEW_2026-09-08.md)、[表格](OCR_TABLE_LAYOUT_MODULE_REVIEW_2026-09-08.md)、[结构化 KAH](OCR_STRUCTURED_KAH_MODULE_REVIEW_2026-09-08.md) 与 [桌面审阅/启动诊断](OCR_DESKTOP_REVIEW_AND_STARTUP_MODULE_REVIEW_2026-09-08.md)。干净机器发行验收与本轮 P2 的人工可读性确认仍未完成。
+
 > 后续修复：A1–A9 已做针对性修复，原失败回归已转绿；本页保留此前验收历史。最新结果与未验收边界见 [阻断项修复与双门禁](OCR_KAH_BLOCKER_FIXES_2026-09-07.md)。
 
 > 更新时间：2026-09-07
 
 方案主文档：[离线 PDF OCR 与原始资料到 KAH 的全链路升级方案](OFFLINE_OCR_AND_KAH_CONVERSION_PLAN.md)
 
-## 最新验收结论：不通过
+## 历史复验结论：不通过（已由 2026-09-08 模块复验部分替代）
 
 2026-09-07 复验发现 OCR 完整性误报、任务失败无法写回、新库增强设置不通和恢复策略等阻断问题。此前“六模块均通过两道门禁”的结论撤回。完整证据与修复顺序见 [OCR 与 KAH 转换复验记录](OCR_KAH_ACCEPTANCE_2026-09-07.md)。
 

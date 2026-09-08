@@ -1,0 +1,38 @@
+{
+  "pdf": "E:\\AI\\agent-knownledge-base\\output\\pdf\\ocr-complex-layout-acceptance.pdf",
+  "elapsedSeconds": 14.819,
+  "extraction": {
+    "ocrPages": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "untrustedPages": [],
+    "pageCount": 4,
+    "missingPages": [],
+    "blankPages": [],
+    "status": "complete",
+    "ocrMode": "auto"
+  },
+  "checks": {
+    "all_pages_classified_complete": true,
+    "page_end_markers_preserved": true,
+    "two_column_content_complete": true,
+    "two_column_human_reading_order": false,
+    "table_cells_complete": true,
+    "table_row_association_order": false,
+    "low_contrast_text": true,
+    "rotated_90_text": true,
+    "sidebar_order": true,
+    "hierarchy_and_footnote_order": true
+  },
+  "passed": 8,
+  "total": 10,
+  "pages": {
+    "1": "\n复杂版式验收-双栏阅读顺序\nL1左栏第一节：离线知识入口。\nR1右栏第一节：禁止隐藏联网。\n本段正文用于验证同一栏内的\n右栏内容应在左栏结束后\n连续阅读顺序。\n再进入阅读序列。\nL2左栏第二节：保持来源定位。\nR2右栏第二节：错误必须可见。\n本段正文用于验证同一栏内的\n右栏内容应在左栏结束后\n连续阅读顺序。\n再进入阅读序列。\nL3左栏第三节：完成审核闭环。\nR3右栏第三节：支持安全卸载。\n本段正文用于验证同一栏内的\n右栏内容应在左栏结束后\n连续阅读顺序。\n再进入阅读序列。\nP1-END双栏页结束",
+    "2": "\n复杂版式验收－表格与合并标题\n季度OCR验收统计\n页数\n状态\n编号\n类型\n通过\nT01\n扫描合同\n12\n复核\nT02\n双栏报告\n8\n失败\nT03\n旋转附件\n3\n通过\nT04\n低对比度\n5\n表格说明：T03需要人工复核。\n注释A：状态列不能与页数列串行。\n注释B：每一行必须保留对应关系。\nP2-END表格页结束",
+    "3": "\n复杂版式验收－旋转与低对比度\nC1低对比度正文：灰色文字也应被识别。\nC2清晰对照正文：用于判断漏识别。\n侧栏卡片\nS1重点提示\nS2次要提示\nROT90旋转九十度文字\nS3操作建议\nP3-END旋转页结束",
+    "4": "\n复杂版式验收－层级与脚注\nH1一级标题：转换流程\nH1.1二级标题：提取\n第一步：读取来源。\n第二步：识别页面。\n第三步：记录定位。[1]\nH1.2二级标题：转换\n第四步：形成referenceKAH。\n第五步：等待人工审核。\n[1]页级定位必须可追溯。\nP4-END文档结束"
+  }
+}

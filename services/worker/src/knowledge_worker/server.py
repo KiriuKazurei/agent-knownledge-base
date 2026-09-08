@@ -3,7 +3,7 @@ import os
 import sys
 import traceback
 
-from . import __version__
+from . import __version__, ocr_plugin
 from .index import HybridIndex
 from .ocr_resources import health_report
 from .parsers import parse_document
@@ -26,6 +26,10 @@ class RpcServer:
         self.methods = {
             "health": self.health,
             "ocr_health": self.ocr_health,
+            "ocr_plugin_status": lambda _: ocr_plugin.status(),
+            "ocr_plugin_install": lambda params: ocr_plugin.install(params["path"]),
+            "ocr_plugin_enabled": lambda params: ocr_plugin.set_enabled(params["enabled"]),
+            "ocr_plugin_uninstall": lambda _: ocr_plugin.uninstall(),
             "parse": self.parse,
             "index_upsert": self.index_upsert,
             "index_delete": self.index_delete,
