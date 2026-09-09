@@ -58,7 +58,7 @@
       {"from": "../../services/api/kah-api.exe", "to": "backend/kah-api.exe"},
       {"from": "../../services/worker/dist/kah-worker.exe", "to": "backend/kah-worker.exe"}
     ],
-    "win": {"target": ["nsis", "portable"], "signAndEditExecutable": false},
+    "win": {"target": ["nsis", "portable"], "icon": "icon.ico", "signExecutable": false},
     "nsis": {
       "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
       "oneClick": false,
