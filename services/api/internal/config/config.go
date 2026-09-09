@@ -26,7 +26,7 @@ func Load() (Config, error) {
 	flag.StringVar(&cfg.WorkerCmd, "worker", env("KAH_WORKER_CMD", ""), "worker executable")
 	flag.Parse()
 	cfg.DesktopToken = os.Getenv("KAH_DESKTOP_TOKEN")
-	cfg.Version = "0.1.0"
+	cfg.Version = "0.1.1"
 
 	if ip := net.ParseIP(cfg.Host); ip == nil || !ip.IsLoopback() {
 		if os.Getenv("KAH_ALLOW_LAN") != "1" {

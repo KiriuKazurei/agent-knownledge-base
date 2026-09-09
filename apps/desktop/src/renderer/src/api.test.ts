@@ -16,6 +16,11 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+test('includes the diagnostic request ID in an API failure', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ detail: 'OCR resource missing', requestId: 'trace-0908' }, 400)))
+  await expect(client.libraries()).rejects.toThrow('OCR resource missing（请求 ID：trace-0908）')
+})
+
 test('waits for a Skill import job before resolving', async () => {
   const fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)

@@ -165,6 +165,7 @@ func (s *Server) Router() *gin.Engine {
 
 func (s *Server) requestContext() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		started := time.Now()
 		requestID := c.GetHeader("X-Request-ID")
 		if requestID == "" {
 			requestID = uuid.NewString()
@@ -172,6 +173,9 @@ func (s *Server) requestContext() gin.HandlerFunc {
 		c.Set("requestID", requestID)
 		c.Header("X-Request-ID", requestID)
 		c.Next()
+		if s.Logger != nil && c.Request.URL.Path != "/api/v1/health" {
+			s.Logger.Info("request completed", "requestId", requestID, "method", c.Request.Method, "route", c.FullPath(), "status", c.Writer.Status(), "durationMs", time.Since(started).Milliseconds())
+		}
 	}
 }
 func cors() gin.HandlerFunc {
@@ -262,6 +266,9 @@ func problem(c *gin.Context, status int, code, detail string, retry bool) {
 	c.AbortWithStatusJSON(status, model.Problem{Type: "https://knowledge-agent-hub.local/problems/" + code, Title: http.StatusText(status), Status: status, Detail: detail, Code: code, RequestID: fmt.Sprint(requestID), Retryable: retry})
 }
 func (s *Server) problem(c *gin.Context, status int, code, detail string, retry bool) {
+	if s.Logger != nil {
+		s.Logger.Warn("request failed", "requestId", c.GetString("requestID"), "method", c.Request.Method, "route", c.FullPath(), "status", status, "code", code, "detail", detail)
+	}
 	problem(c, status, code, detail, retry)
 }
 func bind(c *gin.Context, target any) bool {

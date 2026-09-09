@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { copyFile, mkdtemp, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { installDiagnostics } from './diagnostics'
+import { installedDataRoot } from './runtimePaths'
 
 const API_PORT = 48761
 const BACKEND_START_TIMEOUT_MS = 90_000
@@ -34,7 +36,6 @@ function logRendererConsole(...args: unknown[]): void {
   console.info('KAH_RENDERER_CONSOLE', {
     ...(legacy ?? {}),
     ...(details ?? {}),
-    raw: args.slice(1)
   })
 }
 
@@ -53,7 +54,22 @@ function dataRoot(): string {
   const portableExecutableDirectory = process.env.PORTABLE_EXECUTABLE_DIR?.trim()
   if (portableExecutableDirectory) return path.join(portableExecutableDirectory, 'data')
   const portable = process.env.KAH_PORTABLE === '1' || existsSync(path.join(path.dirname(app.getPath('exe')), 'portable.flag'))
-  return portable ? path.join(path.dirname(app.getPath('exe')), 'data') : path.join(app.getPath('userData'), 'data')
+  if (portable) return path.join(path.dirname(app.getPath('exe')), 'data')
+  if (app.isPackaged) {
+    const configuration = path.join(app.getPath('appData'), 'Knowledge Agent Hub', 'runtime.json')
+    if (existsSync(configuration)) {
+      const value: unknown = JSON.parse(readFileSync(configuration, 'utf8').replace(/^\uFEFF/, ''))
+      if (!isRecord(value) || typeof value.dataRoot !== 'string' || !path.isAbsolute(value.dataRoot)) {
+        throw new Error(`Invalid absolute dataRoot in ${configuration}`)
+      }
+      return installedDataRoot(value.dataRoot, path.dirname(app.getPath('exe')))
+    }
+  }
+  // Installed application data must outlive NSIS replacement of the program
+  // directory. Keep the product data separate from historical development data.
+  return app.isPackaged
+    ? path.join(app.getPath('appData'), 'Knowledge Agent Hub', 'data')
+    : path.join(app.getPath('userData'), 'data')
 }
 
 function findExecutable(command: string): string | undefined {
@@ -108,6 +124,7 @@ function startBackend(): void {
     if (!isQuitting && !backendMaintenance) mainWindow?.webContents.send('runtime:backend-exit', null)
   })
   backend.on('exit', (code) => {
+    console.info('backend exited', { code, quitting: isQuitting, maintenance: backendMaintenance })
     if (!isQuitting && !backendMaintenance) mainWindow?.webContents.send('runtime:backend-exit', code)
   })
 }
@@ -242,7 +259,7 @@ async function createWindow(): Promise<void> {
   mainWindow.webContents.on('render-process-gone', (_event, details) => console.error('renderer process exited', details))
   ;(mainWindow.webContents as unknown as { on: (event: string, listener: (...args: unknown[]) => void) => void }).on('console-message', logRendererConsole)
   mainWindow.webContents.on('did-finish-load', () => {
-    mainWindow?.webContents.executeJavaScript('({ url: location.href, childCount: document.body.children.length, text: document.body.innerText.slice(0, 80), rootHtml: document.querySelector("#root")?.innerHTML.slice(0, 200), scripts: [...document.scripts].map(s => s.src) })')
+    mainWindow?.webContents.executeJavaScript('({ url: location.href, rootReady: Boolean(document.querySelector("#root")?.children.length) })')
       .then((state) => console.info('KAH_RENDERER_READY', state))
       .catch((error) => console.error('renderer inspection failed', error))
   })
@@ -255,6 +272,10 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  installDiagnostics(path.join(dataRoot(), 'logs'))
+  console.info('desktop starting', { version: app.getVersion(), packaged: app.isPackaged, executable: app.getPath('exe'), dataRoot: dataRoot(), platform: process.platform, electron: process.versions.electron })
+  process.on('uncaughtExceptionMonitor', (error) => console.error('uncaught exception', error))
+  process.on('unhandledRejection', (error) => console.error('unhandled rejection', error))
   ipcMain.handle('runtime:config', () => ({ apiBaseUrl: `http://127.0.0.1:${API_PORT}/api/v1`, desktopToken, dataRoot: dataRoot(), version: app.getVersion() }))
   Menu.setApplicationMenu(null)
   ipcMain.handle('window:set-titlebar-theme', (_event, theme: 'light' | 'dark') => {
@@ -300,6 +321,7 @@ app.whenReady().then(async () => {
   try {
     await waitForBackend()
   } catch (error) {
+    console.error('backend startup failed', error)
     stopBackend()
     dialog.showErrorBox('Knowledge Agent Hub', String(error))
     app.quit()
@@ -307,7 +329,7 @@ app.whenReady().then(async () => {
   }
   await createWindow()
   app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) await createWindow() })
-})
+}).catch((error) => { console.error('desktop startup failed', error); dialog.showErrorBox('Knowledge Agent Hub', String(error)); app.quit() })
 
 app.on('second-instance', () => {
   if (!mainWindow) return
@@ -330,5 +352,5 @@ function stopBackend(): void {
   try { process.kill(pid) } catch { /* The process may already have exited. */ }
 }
 
-app.on('before-quit', () => { isQuitting = true; stopBackend() })
+app.on('before-quit', () => { console.info('desktop quitting'); isQuitting = true; stopBackend() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

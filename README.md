@@ -6,11 +6,11 @@ Agent Knowledge Base 是一款本地优先的 Windows 桌面知识库，用于�
 
 ## 下载
 
-当前版本：`v0.1.0`
+当前版本：`v0.1.1`
 
-- [Windows NSIS 安装版](https://github.com/KiriuKazurei/agent-knownledge-base/releases/download/v0.1.0/Knowledge.Agent.Hub-0.1.0-x64-setup.exe)
-- [Windows Portable 便携版](https://github.com/KiriuKazurei/agent-knownledge-base/releases/download/v0.1.0/Knowledge.Agent.Hub-0.1.0-x64-portable.exe)
-- [版本说明与 SHA-256](https://github.com/KiriuKazurei/agent-knownledge-base/releases/tag/v0.1.0)
+- [Windows NSIS 安装版](https://github.com/KiriuKazurei/agent-knownledge-base/releases/download/v0.1.1/Knowledge.Agent.Hub-0.1.1-x64-setup.exe)
+- [Windows Portable 便携版](https://github.com/KiriuKazurei/agent-knownledge-base/releases/download/v0.1.1/Knowledge.Agent.Hub-0.1.1-x64-portable.exe)
+- [版本说明与 SHA-256](https://github.com/KiriuKazurei/agent-knownledge-base/releases/tag/v0.1.1)
 
 当前 Windows 安装包尚未进行商业代码签名，首次运行时可能出现 SmartScreen 提示。
 

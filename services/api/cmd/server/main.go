@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/config"
+	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/diagnostics"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/httpapi"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/storage"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/worker"
@@ -33,12 +34,8 @@ func run() error {
 	if err := os.MkdirAll(filepath.Join(cfg.DataRoot, "logs"), 0o750); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(cfg.DataRoot, "logs", "api.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer logFile.Close()
-	logger := slog.New(slog.NewJSONHandler(logFile, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logWriter := &diagnostics.Writer{Path: filepath.Join(cfg.DataRoot, "logs", "api.log")}
+	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 	store, err := storage.Open(cfg.DataRoot)
 	if err != nil {

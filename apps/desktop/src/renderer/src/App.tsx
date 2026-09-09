@@ -69,7 +69,7 @@ function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, 
       <span>{sectionStatus}</span>
     </div>
     <div className="global-bottom-right">
-      <div className="global-bottom-meta"><span>{sectionMeta}</span><span className="global-bottom-separator" aria-hidden="true" /><span>v0.1.0</span></div>
+      <div className="global-bottom-meta"><span>{sectionMeta}</span><span className="global-bottom-separator" aria-hidden="true" /><span>v0.1.1</span></div>
       <nav className="global-bottom-actions" aria-label="全局功能">
         <button type="button" className={`global-bottom-button ${commandOpen ? 'active' : ''}`} aria-label="打开功能面板" aria-haspopup="dialog" aria-expanded={commandOpen} aria-controls="command-palette" onClick={onOpenCommands}>
           <Command size={16} aria-hidden="true" /><span>功能面板</span><kbd>Ctrl ⇧ P</kbd>

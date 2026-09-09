@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -70,8 +71,9 @@ func Start(ctx context.Context, command string, args []string, workingDirectory,
 	go client.wait()
 	// A PyInstaller one-file worker must extract its bundled Python, LanceDB,
 	// and document parser dependencies on the first launch. On clean Windows
-	// machines this can exceed ten seconds even though the process is healthy.
-	healthCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// OCR-enabled Windows builds can take over 30 seconds on a cold start.
+	// Keep this below the desktop's 90-second backend startup deadline.
+	healthCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var result map[string]any
 	if err := client.Call(healthCtx, "health", map[string]any{}, &result); err != nil {
@@ -120,6 +122,7 @@ func (c *Client) Call(ctx context.Context, method string, params, out any) error
 			return errors.New("worker stopped")
 		}
 		if value.Error != nil {
+			slog.Error("worker RPC failed", "method", method, "rpcId", id, "code", value.Error.Code, "error", value.Error.Message)
 			return fmt.Errorf("worker error %d: %s", value.Error.Code, value.Error.Message)
 		}
 		if out == nil {
@@ -149,11 +152,17 @@ func (c *Client) read(reader io.Reader) {
 }
 func (c *Client) drainErrors(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
+		slog.Warn("worker stderr", "pid", c.cmd.Process.Pid, "detail", scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		slog.Error("worker stderr read failed", "error", err)
 	}
 }
 func (c *Client) wait() {
-	_ = c.cmd.Wait()
+	err := c.cmd.Wait()
+	slog.Info("worker exited", "pid", c.cmd.Process.Pid, "error", err)
 	c.state.Store("stopped")
 	close(c.closed)
 	c.mu.Lock()

@@ -24,7 +24,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.desktopToken}`, ...init.headers } })
   if (!response.ok) {
     const problem = await response.json().catch(() => ({ detail: response.statusText }))
-    throw new Error(problem.detail ?? problem.title ?? `Request failed: ${response.status}`)
+    const message = problem.detail ?? problem.title ?? `Request failed: ${response.status}`
+    throw new Error(problem.requestId ? `${message}（请求 ID：${problem.requestId}）` : message)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
