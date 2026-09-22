@@ -2,10 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
-import { copyFile, mkdtemp, rename, rm } from 'node:fs/promises'
+import { copyFile, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { installDiagnostics } from './diagnostics'
 import { installedDataRoot } from './runtimePaths'
+import { showWindowWhenReady } from './windowVisibility'
 
 const API_PORT = 48761
 const BACKEND_START_TIMEOUT_MS = 90_000
@@ -91,8 +92,26 @@ function startBackend(): void {
     KAH_HOST: '127.0.0.1',
     KAH_PORT: String(API_PORT)
   }
+  const archifyRoot = app.isPackaged
+    ? path.join(process.resourcesPath, 'archify')
+    : path.join(projectRoot(), 'third_party', 'archify', 'upstream')
+  if (existsSync(path.join(archifyRoot, 'bin', 'archify.mjs'))) {
+    environment.KAH_ARCHIFY_ROOT = archifyRoot
+  }
   if (app.isPackaged) {
     const backendDirectory = path.join(process.resourcesPath, 'backend')
+    const bundledNode = path.join(process.resourcesPath, 'node', process.platform === 'win32' ? 'node.exe' : 'node')
+    const systemNode = findExecutable('node')
+    if (existsSync(bundledNode)) {
+      environment.KAH_NODE_PATH = bundledNode
+    } else if (systemNode) {
+      environment.KAH_NODE_PATH = systemNode
+    } else {
+      // Electron can execute the vendored CLI in Node mode. The API only
+      // enables this mode for the path supplied by this main process.
+      environment.KAH_NODE_PATH = process.execPath
+      environment.KAH_ARCHIFY_ELECTRON_NODE = '1'
+    }
     environment.KAH_WORKER_CMD = path.join(backendDirectory, 'kah-worker.exe')
     backend = spawn(path.join(backendDirectory, 'kah-api.exe'), [], { env: environment, windowsHide: true })
   } else {
@@ -254,7 +273,7 @@ async function createWindow(): Promise<void> {
       sandbox: true
     }
   })
-  mainWindow.once('ready-to-show', () => mainWindow?.show())
+  showWindowWhenReady(mainWindow)
   mainWindow.webContents.on('did-fail-load', (_event, code, description, validatedUrl) => console.error('renderer load failed', { code, description, validatedUrl }))
   mainWindow.webContents.on('render-process-gone', (_event, details) => console.error('renderer process exited', details))
   ;(mainWindow.webContents as unknown as { on: (event: string, listener: (...args: unknown[]) => void) => void }).on('console-message', logRendererConsole)
@@ -286,6 +305,8 @@ app.whenReady().then(async () => {
       ? [{ name: 'Skill Markdown', extensions: ['md'] }, { name: 'All files', extensions: ['*'] }]
       : kind === 'ocr-plugin'
         ? [{ name: 'OCR plugin packages', extensions: ['zip'] }]
+        : kind === 'embedding-model'
+          ? [{ name: 'Embedding model packages', extensions: ['zip'] }]
         : kind === 'skill-zip'
         ? [{ name: 'Skill packages', extensions: ['zip'] }, { name: 'All files', extensions: ['*'] }]
         : [{ name: 'Knowledge files', extensions: ['md','markdown','txt','pdf','doc','docx','xls','xlsx','xlsm','ppt','pptx','html','htm','go','py','js','jsx','ts','tsx','java','cs','rs','cpp','c','h','json','yaml','yml','toml','xml','sql','sh','ps1'] }, { name: 'All files', extensions: ['*'] }]
@@ -298,6 +319,16 @@ app.whenReady().then(async () => {
   ipcMain.handle('dialog:select-directory', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     return result.canceled ? '' : (result.filePaths[0] ?? '')
+  })
+  ipcMain.handle('dialog:save-file', async (_event, input: { defaultPath?: string; data: string | Uint8Array }) => {
+    const defaultPath = typeof input?.defaultPath === 'string' && input.defaultPath.trim()
+      ? path.basename(input.defaultPath.trim())
+      : 'architecture-export'
+    const result = await dialog.showSaveDialog({ defaultPath })
+    if (result.canceled || !result.filePath) return ''
+    const data = typeof input?.data === 'string' ? Buffer.from(input.data, 'utf8') : Buffer.from(input.data)
+    await writeFile(result.filePath, data)
+    return result.filePath
   })
   ipcMain.handle('backup:select-candidate', async () => {
     const result = await dialog.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'Knowledge Agent Hub backup', extensions: ['kahbackup'] }] })

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knowledge-agent-hub.local/contracts/embedding-model.schema.json",
+  "title": "KAH local embedding model manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "id",
+    "version",
+    "upstreamCommit",
+    "license",
+    "dimension",
+    "tokenizer",
+    "maxTokens",
+    "pooling",
+    "queryPrefix",
+    "passagePrefix",
+    "runtime",
+    "files"
+  ],
+  "properties": {
+    "schema": {"const": "kah-embedding-model/v1"},
+    "modelType": {"const": "text-embedding"},
+    "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,79}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,79})?$"},
+    "version": {"type": "string", "minLength": 1, "maxLength": 120},
+    "upstreamCommit": {"type": "string", "minLength": 1, "maxLength": 160},
+    "license": {"type": "string", "minLength": 1, "maxLength": 200},
+    "dimension": {"type": "integer", "minimum": 1, "maximum": 8192},
+    "maxTokens": {"type": "integer", "minimum": 1, "maximum": 32768},
+    "tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["configHash", "runtimeVersion"],
+      "properties": {
+        "configHash": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "runtimeVersion": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "minLength": 1}
+      }
+    },
+    "pooling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["mean", "cls"]},
+        "normalize": {"type": "boolean"}
+      }
+    },
+    "poolingConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "upstreamCommit", "mode"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "upstreamCommit": {"type": "string", "minLength": 1},
+        "mode": {"enum": ["cls_token", "mean_tokens", "max_tokens"]}
+      }
+    },
+    "queryPrefix": {"type": "string"},
+    "passagePrefix": {"type": "string"},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "device"],
+      "properties": {
+        "name": {"enum": ["onnxruntime", "onnx-runtime"]},
+        "version": {"type": "string", "minLength": 1},
+        "device": {"const": "cpu"}
+      }
+    },
+    "conversionProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commit", "sourceModel", "sourceCommit", "conversion"],
+      "properties": {
+        "repository": {"type": "string", "format": "uri"},
+        "commit": {"type": "string", "minLength": 1},
+        "sourceModel": {"type": "string", "minLength": 1},
+        "sourceCommit": {"type": "string", "minLength": 1},
+        "sourceTokenizerSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "licenseRepository": {"type": "string", "format": "uri"},
+        "licenseCommit": {"type": "string", "minLength": 1},
+        "upstreamPoolingConfigSha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "conversion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tool", "opset", "dtype", "task", "packages"],
+          "properties": {
+            "tool": {"type": "string", "minLength": 1},
+            "opset": {"type": "integer", "minimum": 1},
+            "dtype": {"type": "string", "minLength": 1},
+            "task": {"type": "string", "minLength": 1},
+            "packages": {"type": "object", "additionalProperties": {"type": "string", "minLength": 1}}
+          }
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "path", "sha256", "size"],
+        "properties": {
+          "role": {"enum": ["model", "tokenizer", "vocab", "license", "config", "resource"]},
+          "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)(?:\\.|\\.\\.)/(?!$))(?!.*\\\\)(?!.*\\x00)[^:]+$"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+          "size": {"type": "integer", "minimum": 0, "maximum": 524288000}
+        }
+      }
+    }
+  }
+}

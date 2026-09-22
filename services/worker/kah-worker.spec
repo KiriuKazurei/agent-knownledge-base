@@ -13,7 +13,7 @@ def collect_optional(package):
         return [], [], []
 
 
-for optional_package in ("pypdfium2", "rapidocr", "onnxruntime"):
+for optional_package in ("pypdfium2", "rapidocr", "onnxruntime", "tokenizers"):
     optional_datas, optional_binaries, optional_hiddenimports = collect_optional(optional_package)
     datas += optional_datas
     binaries += optional_binaries
@@ -24,7 +24,7 @@ a = Analysis(
     pathex=["src"],
     binaries=binaries,
     datas=datas,
-    hiddenimports=hiddenimports + ["pypdf", "docx", "openpyxl", "pptx", "bs4", "pypdfium2", "rapidocr", "onnxruntime"],
+    hiddenimports=hiddenimports + ["pypdf", "docx", "openpyxl", "pptx", "bs4", "pypdfium2", "rapidocr", "onnxruntime", "tokenizers"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

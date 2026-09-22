@@ -59,6 +59,13 @@ func run() error {
 	if err := api.ResumeQueuedJobs(rootCtx); err != nil {
 		logger.Error("queued job recovery failed", "error", err)
 	}
+	if err := api.ResumeArchitectureTasks(rootCtx); err != nil {
+		logger.Error("architecture task recovery failed", "error", err)
+	}
+	if err := api.ResumeRetrievalIndexes(rootCtx); err != nil {
+		logger.Error("retrieval index recovery failed", "error", err)
+	}
+	api.StartArchitectureScheduler(rootCtx)
 	api.StartSourceWatchers(rootCtx)
 	server := &http.Server{Addr: cfg.Host + ":" + cfg.Port, Handler: api.Router(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 1 << 20}
 	stop := make(chan os.Signal, 1)

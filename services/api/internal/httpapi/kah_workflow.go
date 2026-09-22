@@ -145,10 +145,12 @@ func (s *Server) runKAHKnowledgePublish(jobID, submissionID string) {
 	if s.stopIfJobCancellationRequested(ctx, jobID) {
 		return
 	}
-	if _, err = s.Store.PublishKAHSubmission(ctx, submissionID); err != nil {
-		s.failJob(ctx, jobID, err)
+	published, publishErr := s.Store.PublishKAHSubmission(ctx, submissionID)
+	if publishErr != nil {
+		s.failJob(ctx, jobID, publishErr)
 		return
 	}
+	s.refreshUnifiedLibrary(s.lifecycleContext(), published.LibraryID)
 	if !s.stopIfJobCancellationRequested(ctx, jobID) {
 		_ = s.Store.UpdateJob(ctx, jobID, "completed", 1, "KAH knowledge published to formal revisions")
 	}

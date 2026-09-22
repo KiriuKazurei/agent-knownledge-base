@@ -82,6 +82,7 @@ func (s *Server) approveKAHSubmission(c *gin.Context) {
 		return
 	}
 	_ = s.Store.AddAudit(operationContext(c), actorName(c), "kah_knowledge_published", published.URI, map[string]any{"revision": published.Revision, "submissionId": item.ID})
+	s.refreshUnifiedLibrary(s.lifecycleContext(), published.LibraryID)
 	c.JSON(http.StatusOK, published)
 }
 

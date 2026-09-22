@@ -17,9 +17,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
+	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/architecture"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/config"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/model"
 	"github.com/KiriuKazurei/agent-knownledge-base/services/api/internal/providers"
@@ -31,11 +33,17 @@ import (
 )
 
 type Server struct {
-	Config    config.Config
-	Store     *storage.Store
-	Worker    *worker.Client
-	Providers *providers.Client
-	Logger    *slog.Logger
+	Config            config.Config
+	Store             *storage.Store
+	Worker            *worker.Client
+	Providers         *providers.Client
+	Logger            *slog.Logger
+	ArchitectureChain architecture.AnalysisChain
+	Archify           architecture.ArchifyCLI
+	lifecycleCtx      context.Context
+	retrievalMu       sync.Mutex
+	retrievalRunning  map[string]bool
+	retrievalDirty    map[string]bool
 }
 type identity struct {
 	Desktop bool
@@ -52,13 +60,41 @@ func actorName(c *gin.Context) string {
 }
 
 func New(cfg config.Config, store *storage.Store, workerClient *worker.Client, logger *slog.Logger) *Server {
-	s := &Server{Config: cfg, Store: store, Worker: workerClient, Providers: providers.New(), Logger: logger}
+	s := &Server{Config: cfg, Store: store, Worker: workerClient, Providers: providers.New(), Logger: logger, Archify: architecture.NewArchifyCLI("", ""), lifecycleCtx: context.Background(), retrievalRunning: map[string]bool{}, retrievalDirty: map[string]bool{}}
+	s.ArchitectureChain = architecture.AnalysisChain{
+		Codex: architecture.CodexAnalyzer{},
+		MCP:   architecture.FunctionAnalyzer{ExecutorName: "mcp", Check: s.mcpArchitectureAvailable, RemoteCheck: func(context.Context, model.Project) bool { return true }, Run: s.runMCPArchitectureAgent},
+		Provider: architecture.FunctionAnalyzer{ExecutorName: "provider", Check: func(ctx context.Context, project model.Project) bool { return project.Execution.ProviderID != "" }, RemoteCheck: func(ctx context.Context, project model.Project) bool {
+			if s.Store == nil || project.Execution.ProviderID == "" {
+				return true
+			}
+			provider, err := s.Store.GetProvider(ctx, project.Execution.ProviderID)
+			return err != nil || !provider.Local
+		}, Run: s.runConfiguredArchitectureProvider},
+	}
 	if store != nil {
 		if _, err := store.EnsureSubmissionFormatter(context.Background()); err != nil && logger != nil {
 			logger.Warn("failed to ensure submission formatter Skill", "error", err)
 		}
 	}
 	return s
+}
+
+// SetLifecycleContext supplies the process context used by background work
+// started from HTTP handlers. Request contexts end when a response is sent;
+// architecture scans must instead stop with the API process.
+func (s *Server) SetLifecycleContext(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.lifecycleCtx = ctx
+}
+
+func (s *Server) lifecycleContext() context.Context {
+	if s.lifecycleCtx == nil {
+		return context.Background()
+	}
+	return s.lifecycleCtx
 }
 
 func (s *Server) Router() *gin.Engine {
@@ -83,6 +119,11 @@ func (s *Server) Router() *gin.Engine {
 	admin.GET("/skills/:id/files/*path", s.skillFile)
 	admin.POST("/knowledge/search", s.desktopKnowledgeSearch)
 	admin.GET("/knowledge/resolve", s.desktopKnowledgeGet)
+	// Desktop citation search and answer mode share the same unified retrieval
+	// path as MCP evidence_search. Keep these routes under the desktop group;
+	// Agent tokens are rejected by requireDesktop before any query is run.
+	admin.POST("/query", s.query)
+	admin.POST("/query/stream", s.queryStream)
 	admin.GET("/graph", s.getRelationshipGraph)
 	admin.POST("/graph/workspaces", s.createGraphWorkspace)
 	admin.PATCH("/graph/workspaces/:id", s.updateGraphWorkspace)
@@ -104,6 +145,12 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/plugins/ocr/install", s.ocrPlugin)
 	admin.PATCH("/plugins/ocr", s.ocrPlugin)
 	admin.DELETE("/plugins/ocr", s.ocrPlugin)
+	admin.GET("/embedding-models", s.embeddingModels)
+	admin.GET("/embedding-models/health", s.embeddingModels)
+	admin.POST("/embedding-models/install", s.embeddingModels)
+	admin.POST("/embedding-models/install-online", s.embeddingModels)
+	admin.PATCH("/embedding-models", s.embeddingModels)
+	admin.DELETE("/embedding-models", s.embeddingModels)
 	admin.PATCH("/documents/:id", s.updateDocument)
 	admin.POST("/documents/batch", s.batchDocuments)
 	admin.POST("/documents/:id/reindex", s.reindexDocument)
@@ -160,6 +207,42 @@ func (s *Server) Router() *gin.Engine {
 	admin.POST("/backups", s.createBackup)
 	admin.POST("/backups/verify", s.verifyBackup)
 	admin.POST("/indexes/rebuild", s.rebuildIndex)
+	// Unified retrieval is a desktop-only, scope-checked API. Agent evidence
+	// tools are intentionally added in the next stage with separate scopes.
+	admin.POST("/retrieval/search", s.retrievalSearch)
+	admin.POST("/retrieval/index/rebuild", s.retrievalRebuild)
+	admin.GET("/retrieval/index", s.retrievalIndexStatus)
+	admin.GET("/retrieval/index/progress", s.retrievalIndexProgress)
+	admin.POST("/retrieval/index/cancel", s.retrievalIndexCancel)
+	// Stage 1 project architecture scope. All routes are under the desktop
+	// group; Agent tokens cannot create projects or read source snapshots.
+	admin.GET("/projects", s.listProjects)
+	admin.POST("/projects", s.createProject)
+	admin.GET("/projects/:id", s.getProject)
+	admin.PATCH("/projects/:id", s.updateProject)
+	admin.DELETE("/projects/:id", s.deleteProject)
+	admin.POST("/projects/:id/scan", s.scanProject)
+	admin.POST("/projects/:id/generate", s.generateArchitectureProject)
+	admin.GET("/projects/:id/tasks", s.listArchitectureTasks)
+	admin.GET("/projects/:id/snapshots", s.listArchitectureSnapshots)
+	admin.GET("/projects/:id/snapshots/:snapshotId", s.getArchitectureSnapshot)
+	admin.GET("/projects/:id/snapshots/:snapshotId/analysis", s.getArchitectureAnalysis)
+	admin.POST("/projects/:id/snapshots/:snapshotId/analysis", s.saveArchitectureAnalysis)
+	admin.POST("/architecture-tasks/:id/cancel", s.cancelArchitectureTask)
+	admin.GET("/projects/:id/versions/:snapshotId/diff", s.getArchitectureDiff)
+	admin.GET("/projects/:id/snapshots/:snapshotId/artifacts", s.listArchitectureArtifacts)
+	admin.GET("/projects/:id/snapshots/:snapshotId/artifacts/:kind", s.downloadArchitectureArtifact)
+	admin.POST("/architecture/agents", s.registerArchitectureAgent)
+	admin.GET("/architecture/agents", s.listArchitectureAgents)
+	// Agent lease endpoints deliberately live outside the desktop group. They
+	// authenticate with a dedicated architecture-agent secret and never expose
+	// lease tokens to desktop task-list responses.
+	agent := v1.Group("/architecture/agent")
+	agent.Use(s.architectureAgentAuth())
+	agent.POST("/tasks/claim", s.claimArchitectureAgentTask)
+	agent.POST("/tasks/heartbeat", s.heartbeatArchitectureAgentTask)
+	agent.POST("/tasks/result", s.submitArchitectureAgentResult)
+	agent.POST("/tasks/failure", s.submitArchitectureAgentFailure)
 	return router
 }
 
@@ -473,6 +556,7 @@ func (s *Server) deleteLibrary(c *gin.Context) {
 		}
 	}
 	_ = s.Store.AddAudit(operationContext(c), actorName(c), "library_trashed", c.Param("id"), nil)
+	s.refreshUnifiedLibrary(s.lifecycleContext(), c.Param("id"))
 	c.Status(204)
 }
 func (s *Server) listDocuments(c *gin.Context) {
@@ -600,6 +684,7 @@ func (s *Server) deleteDocument(c *gin.Context) {
 		}
 	}
 	_ = s.Store.AddAudit(operationContext(c), actorName(c), "document_trashed", detail.ID, nil)
+	s.refreshUnifiedLibrary(s.lifecycleContext(), detail.LibraryID)
 	c.Status(204)
 }
 
@@ -1326,7 +1411,11 @@ func (s *Server) authorizeLibraries(c *gin.Context, requested []string) ([]strin
 	}
 	allowed := id.Token.LibraryIDs
 	if len(allowed) == 0 {
-		return requested, true
+		// Legacy tokens with an empty library grant are invalid for every
+		// scoped operation.  Treating an empty grant as unrestricted would
+		// silently widen old credentials after the retrieval expansion.
+		s.problem(c, 403, "library_forbidden", "Token has no library authorization", false)
+		return nil, false
 	}
 	if len(requested) == 0 {
 		return allowed, true
@@ -1353,11 +1442,30 @@ func (s *Server) runQuery(c *gin.Context, req model.QueryRequest) (model.QueryRe
 		return model.QueryResponse{}, errors.New("authorization already handled")
 	}
 	req.LibraryIDs = libraries
-	evidence, degraded, degradedReason, err := s.searchEvidence(operationContext(c), req)
+	allowedLibraries, allowedProjects, err := s.retrievalScope(operationContext(c), req.LibraryIDs, req.ProjectIDs)
 	if err != nil {
 		return model.QueryResponse{}, err
 	}
-	requiredLibraryIDs := append([]string{}, req.LibraryIDs...)
+	sourceType, err := normalizeEvidenceSourceType(req.SourceType)
+	if err != nil {
+		return model.QueryResponse{}, err
+	}
+	filters := model.RetrievalFilters{
+		SourceType:        sourceType,
+		SourceTypes:       uniqueNonEmpty(req.SourceTypes),
+		LibraryIDs:        allowedLibraries,
+		AllowedLibraryIDs: allowedLibraries,
+		ProjectIDs:        req.ProjectIDs,
+		AllowedProjectIDs: allowedProjects,
+		AllowRaw:          true,
+	}
+	retrieved, err := s.searchUnifiedRetrieval(operationContext(c), model.RetrievalSearchRequest{Query: req.Query, Filters: filters, TopK: req.TopK, RetrievalMode: req.RetrievalMode})
+	if err != nil {
+		return model.QueryResponse{}, err
+	}
+	evidence := retrievalResultsToEvidence(retrieved.Results)
+	degraded, degradedReason := retrieved.Degraded, retrieved.DegradedReason
+	requiredLibraryIDs := append([]string{}, allowedLibraries...)
 	if len(requiredLibraryIDs) == 0 {
 		seen := map[string]bool{}
 		for _, item := range evidence {
@@ -1371,7 +1479,14 @@ func (s *Server) runQuery(c *gin.Context, req model.QueryRequest) (model.QueryRe
 	if err != nil {
 		return model.QueryResponse{}, err
 	}
-	response := model.QueryResponse{RequestID: uuid.NewString(), Evidence: evidence, RequiredSkills: requiredSkills, Degraded: degraded, DegradedReason: degradedReason}
+	response := model.QueryResponse{
+		RequestID: uuid.NewString(), Evidence: evidence, RequiredSkills: requiredSkills,
+		Source: retrieved.Source, Generation: retrieved.Generation, SemanticAvailable: retrieved.SemanticAvailable,
+		KeywordOnly: retrieved.KeywordOnly, ModelID: retrieved.ModelID, ModelVersion: retrieved.ModelVersion,
+		ConfigHash: retrieved.ConfigHash, Dimension: retrieved.Dimension, CorpusComplete: retrieved.CorpusComplete,
+		NeedsRebuild: retrieved.NeedsRebuild, RetrievalMode: retrieved.RetrievalMode,
+		Degraded: degraded, DegradedReason: degradedReason,
+	}
 	if req.ResponseMode == "answer" {
 		if req.ProviderID == "" {
 			return response, errors.New("providerId is required for answer mode")
@@ -1503,7 +1618,14 @@ func (s *Server) queryStream(c *gin.Context) {
 		_ = send("error", gin.H{"code": "query_failed", "detail": err.Error()})
 		return
 	}
-	if err := send("retrieval", gin.H{"requestId": response.RequestID, "degraded": response.Degraded, "degradedReason": response.DegradedReason, "count": len(response.Evidence), "requiredSkills": response.RequiredSkills}); err != nil {
+	if err := send("retrieval", gin.H{
+		"requestId": response.RequestID, "source": response.Source, "generation": response.Generation,
+		"semanticAvailable": response.SemanticAvailable, "keywordOnly": response.KeywordOnly,
+		"modelId": response.ModelID, "modelVersion": response.ModelVersion, "configHash": response.ConfigHash,
+		"dimension": response.Dimension, "corpusComplete": response.CorpusComplete, "needsRebuild": response.NeedsRebuild,
+		"retrievalMode": response.RetrievalMode, "degraded": response.Degraded, "degradedReason": response.DegradedReason,
+		"count": len(response.Evidence), "requiredSkills": response.RequiredSkills,
+	}); err != nil {
 		return
 	}
 	for _, item := range response.Evidence {
@@ -1612,6 +1734,7 @@ func (s *Server) createToken(c *gin.Context) {
 		Name       string   `json:"name"`
 		Scopes     []string `json:"scopes"`
 		LibraryIDs []string `json:"libraryIds"`
+		ProjectIDs []string `json:"projectIds"`
 	}
 	if !bind(c, &input) {
 		return
@@ -1621,13 +1744,17 @@ func (s *Server) createToken(c *gin.Context) {
 		return
 	}
 	for _, scope := range input.Scopes {
-		if scope != "mcp_read" && scope != "mcp_manage" {
-			s.problem(c, 400, "invalid_scope", "Only mcp_read and mcp_manage scopes are supported", false)
+		if scope != "mcp_read" && scope != "mcp_manage" && scope != "evidence_search" && scope != "evidence_read" {
+			s.problem(c, 400, "invalid_scope", "Unsupported token scope", false)
 			return
 		}
 	}
-	if (contains(input.Scopes, "mcp_read") || contains(input.Scopes, "mcp_manage")) && len(input.LibraryIDs) == 0 {
+	if (contains(input.Scopes, "mcp_read") || contains(input.Scopes, "mcp_manage") || contains(input.Scopes, "evidence_search") || contains(input.Scopes, "evidence_read")) && len(input.LibraryIDs) == 0 {
 		s.problem(c, 400, "mcp_library_required", "MCP tokens must be bound to at least one library", false)
+		return
+	}
+	if (contains(input.Scopes, "evidence_search") || contains(input.Scopes, "evidence_read")) && !contains(input.Scopes, "mcp_read") {
+		s.problem(c, 400, "invalid_scope", "Evidence scopes require mcp_read", false)
 		return
 	}
 	for index, libraryID := range input.LibraryIDs {
@@ -1637,9 +1764,26 @@ func (s *Server) createToken(c *gin.Context) {
 			return
 		}
 	}
+	for index, projectID := range input.ProjectIDs {
+		input.ProjectIDs[index] = strings.TrimSpace(projectID)
+		if input.ProjectIDs[index] == "" {
+			s.problem(c, 400, "invalid_token", "projectIds must contain non-empty IDs", false)
+			return
+		}
+	}
+	input.LibraryIDs = uniqueNonEmpty(input.LibraryIDs)
+	input.ProjectIDs = uniqueNonEmpty(input.ProjectIDs)
 	if err := s.Store.ValidateLibraryIDs(operationContext(c), input.LibraryIDs); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			s.problem(c, 400, "invalid_token", "One or more libraryIds do not exist", false)
+			return
+		}
+		s.problem(c, 500, "token_create_failed", err.Error(), true)
+		return
+	}
+	if err := s.Store.ValidateProjectIDs(operationContext(c), input.ProjectIDs, input.LibraryIDs); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.problem(c, 400, "invalid_token", "One or more projectIds do not exist in the selected libraries", false)
 			return
 		}
 		s.problem(c, 500, "token_create_failed", err.Error(), true)
@@ -1651,12 +1795,12 @@ func (s *Server) createToken(c *gin.Context) {
 		return
 	}
 	sum := sha256.Sum256([]byte(secret))
-	item, err := s.Store.CreateToken(operationContext(c), input.Name, hex.EncodeToString(sum[:]), input.Scopes, input.LibraryIDs)
+	item, err := s.Store.CreateToken(operationContext(c), input.Name, hex.EncodeToString(sum[:]), input.Scopes, input.LibraryIDs, input.ProjectIDs)
 	if err != nil {
 		s.problem(c, 500, "token_create_failed", err.Error(), true)
 		return
 	}
-	_ = s.Store.AddAudit(operationContext(c), actorName(c), "token_created", item.ID, map[string]any{"scopes": input.Scopes, "libraryCount": len(input.LibraryIDs)})
+	_ = s.Store.AddAudit(operationContext(c), actorName(c), "token_created", item.ID, map[string]any{"scopes": input.Scopes, "libraryCount": len(input.LibraryIDs), "projectCount": len(input.ProjectIDs)})
 	item.Secret = secret
 	c.JSON(201, item)
 }

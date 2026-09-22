@@ -12,22 +12,31 @@ vi.mock('./api', () => ({
   client: {
     libraries: vi.fn(async () => []), documents: vi.fn(async () => []), folders: vi.fn(async () => []), jobs: vi.fn(async () => []), savedSearches: vi.fn(async () => []), knowledgeSearch: vi.fn(async () => ({ results: [] })),
     document: vi.fn(), knowledge: vi.fn(), submissions: vi.fn(async () => []), submission: vi.fn(), approveSubmission: vi.fn(), rejectSubmission: vi.fn(), skills: vi.fn(async () => []), skill: vi.fn(), skillManifest: vi.fn(), importSkill: vi.fn(), updateSkillLinks: vi.fn(), deleteSkill: vi.fn(), skillMappingTargets: vi.fn(async () => []), skillMappingTarget: vi.fn(), createSkillMappingTarget: vi.fn(), updateSkillMappingTarget: vi.fn(), addSkillMappings: vi.fn(), verifySkillMappingTarget: vi.fn(), repairSkillMapping: vi.fn(), removeSkillMapping: vi.fn(), forgetSkillMapping: vi.fn(), deleteSkillMappingTarget: vi.fn(), createLibrary: vi.fn(), importFiles: vi.fn(), importUrl: vi.fn(), query: vi.fn(),
-    providers: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), createWatch: vi.fn(), watches: vi.fn(async () => []), updateWatch: vi.fn(), scanWatch: vi.fn(), deleteWatch: vi.fn(), backup: vi.fn(), backups: vi.fn(async () => []), verifyBackup: vi.fn(), rebuildIndex: vi.fn(), createSavedSearch: vi.fn(), updateSavedSearch: vi.fn(), deleteSavedSearch: vi.fn(), graph: vi.fn(), createGraphWorkspace: vi.fn(), updateGraphWorkspace: vi.fn(), saveGraphPositions: vi.fn(), autoLayoutGraph: vi.fn(), trash: vi.fn(async () => []), restoreTrash: vi.fn(), purgeTrash: vi.fn(), emptyTrash: vi.fn(), batchDocuments: vi.fn(), reindexDocument: vi.fn(), relinkDocument: vi.fn(), cancelJob: vi.fn(), retryJob: vi.fn(), testProvider: vi.fn(), deleteProvider: vi.fn(), providerModels: vi.fn()
+    providers: vi.fn(async () => []), embeddingModels: vi.fn(async () => []), tokens: vi.fn(async () => []), feedback: vi.fn(), updateLibrary: vi.fn(), updateDocument: vi.fn(), createFolder: vi.fn(), createWatch: vi.fn(), watches: vi.fn(async () => []), updateWatch: vi.fn(), scanWatch: vi.fn(), deleteWatch: vi.fn(), backup: vi.fn(), backups: vi.fn(async () => []), verifyBackup: vi.fn(), rebuildIndex: vi.fn(), createSavedSearch: vi.fn(), updateSavedSearch: vi.fn(), deleteSavedSearch: vi.fn(), graph: vi.fn(), createGraphWorkspace: vi.fn(), updateGraphWorkspace: vi.fn(), saveGraphPositions: vi.fn(), autoLayoutGraph: vi.fn(), trash: vi.fn(async () => []), restoreTrash: vi.fn(), purgeTrash: vi.fn(), emptyTrash: vi.fn(), batchDocuments: vi.fn(), reindexDocument: vi.fn(), relinkDocument: vi.fn(), cancelJob: vi.fn(), retryJob: vi.fn(), testProvider: vi.fn(), deleteProvider: vi.fn(), providerModels: vi.fn(), architectureProjects: vi.fn(async () => []), architectureProject: vi.fn(), architectureTasks: vi.fn(async () => []), architectureSnapshots: vi.fn(async () => []), architectureSnapshot: vi.fn(), architectureAnalysis: vi.fn(), architectureDiff: vi.fn(), architectureArtifacts: vi.fn(async () => []), downloadArchitectureArtifact: vi.fn(), scanArchitectureProject: vi.fn(), generateArchitectureProject: vi.fn(), cancelArchitectureTask: vi.fn(), createArchitectureProject: vi.fn(), updateArchitectureProject: vi.fn(), deleteArchitectureProject: vi.fn()
   }
 }))
 
-Object.defineProperty(window, 'kah', { value: { runtimeConfig: vi.fn(), setTitleBarTheme: vi.fn(), selectFiles: vi.fn(async () => []), selectDirectory: vi.fn(async () => ''), openPath: vi.fn(), openExternal: vi.fn(), onBackendExit: vi.fn(() => () => {}) } })
+Object.defineProperty(window, 'kah', { value: { runtimeConfig: vi.fn(), setTitleBarTheme: vi.fn(), selectFiles: vi.fn(async () => []), selectDirectory: vi.fn(async () => ''), saveFile: vi.fn(async () => ''), openPath: vi.fn(), openExternal: vi.fn(), onBackendExit: vi.fn(() => () => {}) } })
 Object.defineProperty(window, 'matchMedia', { value: vi.fn(() => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() })) })
 
 afterEach(() => cleanup())
 
 test('renders the accessible knowledge workbench', async () => {
+  window.localStorage.removeItem('kah.sidebar-collapsed')
   render(<QueryClientProvider client={new QueryClient({defaultOptions:{queries:{retry:false}}})}><App/></QueryClientProvider>)
   expect(screen.getByRole('navigation', {name:'知识库导航'})).toBeInTheDocument()
+  expect(document.querySelector('.brand')).not.toBeInTheDocument()
+  const collapseSidebar = screen.getByRole('button', { name: '折叠左侧栏' })
+  expect(collapseSidebar).toHaveAttribute('aria-expanded', 'true')
+  fireEvent.click(collapseSidebar)
+  expect(document.querySelector('.app-shell')).toHaveClass('sidebar-collapsed')
+  expect(screen.getByRole('button', { name: '展开左侧栏' })).toHaveAttribute('aria-expanded', 'false')
+  await waitFor(() => expect(window.localStorage.getItem('kah.sidebar-collapsed')).toBe('true'))
   expect(screen.getByRole('textbox', {name:'搜索知识'})).toBeInTheDocument()
   expect(screen.queryByRole('button', {name:'切换主题'})).not.toBeInTheDocument()
   expect(screen.queryByRole('button', {name:'切换详情栏'})).not.toBeInTheDocument()
   expect(await screen.findByText('还没有来源文档')).toBeInTheDocument()
+  window.localStorage.removeItem('kah.sidebar-collapsed')
 })
 
 test('opens the command palette with disabled reasons for unavailable actions', async () => {
@@ -102,6 +111,14 @@ test('opens the relationship graph as a first-class workspace and keeps the sele
   expect(screen.getByRole('complementary', { name: '关系图谱详情' })).toBeInTheDocument()
   expect(screen.getByRole('contentinfo', { name: '全局底栏' })).toHaveTextContent('百分比布局已与内容版本分离')
   expect(client.graph).toHaveBeenCalledWith('graph-library', '', '', 1)
+})
+
+test('opens project architecture as a discoverable first-class workspace', async () => {
+  render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App/></QueryClientProvider>)
+  fireEvent.click(screen.getByRole('button', { name: /项目架构代码理解、技术栈与架构图/ }))
+  expect(await screen.findByRole('region', { name: '项目架构' })).toBeInTheDocument()
+  expect(screen.getByRole('heading', { name: '项目架构' })).toBeInTheDocument()
+  expect(await screen.findByText('还没有项目')).toBeInTheDocument()
 })
 
 test('explains how to continue when opening the graph before any library exists', async () => {

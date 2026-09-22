@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kah.local/contracts/retrieval.schema.json",
+  "title": "KAH unified retrieval chunk",
+  "type": "object",
+  "required": ["id", "text", "sourceType", "reviewStatus", "libraryId", "contentHash"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "documentId": {"type": "string"},
+    "text": {"type": "string", "minLength": 1},
+    "sourceType": {"enum": ["knowledge", "raw", "architecture"]},
+    "reviewStatus": {"enum": ["stable", "unreviewed", "derived", "deprecated"]},
+    "libraryId": {"type": "string", "minLength": 1},
+    "projectId": {"type": "string"},
+    "sourceURI": {"type": "string"},
+    "title": {"type": "string"},
+    "filePath": {"type": "string"},
+    "lineStart": {"type": "integer", "minimum": 0},
+    "lineEnd": {"type": "integer", "minimum": 0},
+    "contentHash": {"type": "string", "pattern": "^[A-Fa-f0-9]{64}$"},
+    "symbol": {"type": "string"},
+    "language": {"type": "string"},
+    "permissionScope": {"enum": ["library", "project"]},
+    "location": {"type": "object", "additionalProperties": true},
+    "tokenCount": {"type": "integer", "minimum": 0},
+    "tokenLimit": {"type": "integer", "minimum": 0},
+    "truncated": {"type": "boolean"}
+  },
+  "allOf": [
+    {"if": {"properties": {"sourceType": {"const": "architecture"}}}, "then": {"required": ["projectId"]}},
+    {"if": {"properties": {"sourceType": {"const": "knowledge"}}}, "then": {"properties": {"reviewStatus": {"const": "stable"}}}}
+  ],
+  "additionalProperties": false
+}

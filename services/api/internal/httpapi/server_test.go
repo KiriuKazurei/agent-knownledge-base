@@ -24,6 +24,21 @@ func testServer(t *testing.T) (*Server, http.Handler) {
 	}
 	t.Cleanup(func() { store.Close() })
 	server := New(config.Config{DesktopToken: "desktop-test", Version: "test"}, store, nil, nil)
+	// The managed test sandbox cannot let Node realpath the Windows profile
+	// temp root. Keep Archify's disposable staging files in the workspace; the
+	// actual artifacts are still persisted under the application data root.
+	if cwd, cwdErr := os.Getwd(); cwdErr == nil {
+		for candidate := cwd; ; candidate = filepath.Dir(candidate) {
+			if _, statErr := os.Stat(filepath.Join(candidate, ".run-data")); statErr == nil {
+				server.Archify.WorkRoot = filepath.Join(candidate, ".run-data", "archify-test-work")
+				break
+			}
+			parent := filepath.Dir(candidate)
+			if parent == candidate {
+				break
+			}
+		}
+	}
 	return server, server.Router()
 }
 

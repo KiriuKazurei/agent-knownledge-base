@@ -12,6 +12,7 @@
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
+    "verify:archify-resource": "node ./scripts/verify-archify-resource.mjs",
     "package:win": "electron-vite build && electron-builder --win nsis portable"
   },
   "dependencies": {
@@ -56,7 +57,8 @@
     "files": ["out/**/*", "package.json"],
     "extraResources": [
       {"from": "../../services/api/kah-api.exe", "to": "backend/kah-api.exe"},
-      {"from": "../../services/worker/dist/kah-worker.exe", "to": "backend/kah-worker.exe"}
+      {"from": "../../services/worker/dist/kah-worker.exe", "to": "backend/kah-worker.exe"},
+      {"from": "../../third_party/archify/upstream", "to": "archify"}
     ],
     "win": {"target": ["nsis", "portable"], "icon": "icon.ico", "signExecutable": false},
     "nsis": {

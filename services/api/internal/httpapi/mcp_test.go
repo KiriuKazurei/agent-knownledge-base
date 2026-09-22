@@ -116,6 +116,85 @@ func TestMCPReadSearchDirectoryAndResource(t *testing.T) {
 	}
 }
 
+func TestMCPKnowledgeSearchKeepsStableFallbackAndEvidenceScope(t *testing.T) {
+	server, handler := testServer(t)
+	created := request(t, handler, http.MethodPost, "/api/v1/libraries", map[string]any{"name": "MCP fallback"}, "desktop-test")
+	var library model.Library
+	if err := json.Unmarshal(created.Body.Bytes(), &library); err != nil {
+		t.Fatal(err)
+	}
+	stable := seedStableKnowledge(t, server, library.ID)
+	ready := createReadyImportDocument(t, server, library.ID, "ready.md", "ready-hash")
+	if err := server.Store.ReplaceChunks(context.Background(), ready.ID, []model.Chunk{{ID: "ready-only", DocumentID: ready.ID, Text: "Agent 必须先搜索知识目录", ContentHash: "ready-hash"}}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := server.Store.CreatePendingDocument(context.Background(), library.ID, "pending.md", "text/markdown", "", "", "", "pending-hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.ExecContext(context.Background(), `INSERT INTO chunks(id,document_id,ordinal,text,location_json,content_hash) VALUES(?,?,?,?,?,?)`, "pending-only", pending.ID, 0, "Agent 必须先搜索知识目录", "{}", "pending-hash"); err != nil {
+		t.Fatal(err)
+	}
+	readTokenResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{
+		"name": "evidence", "scopes": []string{"mcp_read", "evidence_search", "evidence_read"}, "libraryIds": []string{library.ID},
+	}, "desktop-test")
+	var readToken model.AgentToken
+	if err := json.Unmarshal(readTokenResponse.Body.Bytes(), &readToken); err != nil {
+		t.Fatal(err)
+	}
+	knowledge := callMCP(t, handler, "/mcp/read", readToken.Secret, "tools/call", map[string]any{"name": "knowledge_search", "arguments": map[string]any{"query": "Agent 必须先搜索知识目录", "libraryIds": []string{library.ID}}})
+	knowledgeResult, ok := knowledge["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("knowledge search response missing result: %#v", knowledge)
+	}
+	knowledgeContent, ok := knowledgeResult["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("knowledge search response missing structured content: %#v", knowledge)
+	}
+	knowledgeItems, ok := knowledgeContent["results"].([]any)
+	if !ok || len(knowledgeItems) == 0 {
+		t.Fatalf("stable knowledge disappeared without a unified generation: %#v", knowledge)
+	}
+	firstKnowledge, _ := knowledgeItems[0].(map[string]any)
+	if firstKnowledge["uri"] != stable.URI {
+		t.Fatalf("knowledge fallback returned a non-current or non-stable item: %#v", firstKnowledge)
+	}
+
+	raw := callMCP(t, handler, "/mcp/read", readToken.Secret, "tools/call", map[string]any{"name": "evidence_search", "arguments": map[string]any{"query": "Agent 必须先搜索知识目录", "sourceType": "raw", "libraryIds": []string{library.ID}}})
+	rawResult, ok := raw["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw evidence response missing result: %#v", raw)
+	}
+	rawStructured, ok := rawResult["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("raw evidence response missing structured content: %#v", raw)
+	}
+	for _, candidate := range rawStructured["results"].([]any) {
+		item, _ := candidate.(map[string]any)
+		if item["id"] == "pending-only" || strings.Contains(item["text"].(string), "pending") {
+			t.Fatalf("pending source leaked into evidence search: %#v", item)
+		}
+	}
+	if len(rawStructured["results"].([]any)) != 1 {
+		t.Fatalf("raw evidence did not return exactly the current ready source: %#v", rawStructured)
+	}
+	readyItem := rawStructured["results"].([]any)[0].(map[string]any)
+	if readyItem["id"] != "ready-only" || readyItem["reviewStatus"] != "unreviewed" {
+		t.Fatalf("raw evidence status or identity was not preserved: %#v", readyItem)
+	}
+
+	legacyResponse := request(t, handler, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "knowledge-only", "scopes": []string{"mcp_read"}, "libraryIds": []string{library.ID}}, "desktop-test")
+	var legacyToken model.AgentToken
+	if err := json.Unmarshal(legacyResponse.Body.Bytes(), &legacyToken); err != nil {
+		t.Fatal(err)
+	}
+	denied := callMCP(t, handler, "/mcp/read", legacyToken.Secret, "tools/call", map[string]any{"name": "evidence_search", "arguments": map[string]any{"query": "Agent", "sourceType": "raw"}})
+	deniedResult, _ := denied["result"].(map[string]any)
+	if deniedResult["isError"] != true {
+		t.Fatalf("legacy mcp_read token gained evidence scope: %#v", denied)
+	}
+}
+
 func TestMCPDocumentSourceValidationPinsCurrentSnapshot(t *testing.T) {
 	server, handler := testServer(t)
 	created := request(t, handler, http.MethodPost, "/api/v1/libraries", map[string]any{"name": "MCP documents"}, "desktop-test")
@@ -322,12 +401,12 @@ func TestMCPManageListsComparesAndReviewsWithConfidence(t *testing.T) {
 	}
 }
 
-func TestLegacyAgentHTTPRoutesAreRemoved(t *testing.T) {
+func TestAgentOnlyHTTPRoutesRemainScoped(t *testing.T) {
 	_, handler := testServer(t)
-	for _, path := range []string{"/api/v1/query", "/api/v1/query/stream", "/api/v1/skills/query", "/api/v1/knowledge-submissions"} {
+	for _, path := range []string{"/api/v1/skills/query", "/api/v1/knowledge-submissions"} {
 		response := request(t, handler, http.MethodPost, path, map[string]any{}, "desktop-test")
 		if response.Code != http.StatusNotFound {
-			t.Fatalf("legacy route %s was not removed: %d %s", path, response.Code, response.Body.String())
+			t.Fatalf("agent-only route %s was not removed: %d %s", path, response.Code, response.Body.String())
 		}
 	}
 }

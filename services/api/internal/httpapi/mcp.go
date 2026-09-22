@@ -167,6 +167,22 @@ func mcpTools(mode string) []gin.H {
 		{"name": "knowledge_search", "description": "Search KAH knowledge and return a compact directory. Read entries before requesting full knowledge.", "inputSchema": searchSchema, "annotations": gin.H{"readOnlyHint": true}},
 		{"name": "knowledge_get", "description": "Read one stable KAH knowledge revision or selected stable section IDs.", "inputSchema": getSchema, "annotations": gin.H{"readOnlyHint": true}},
 	}
+	if mode == "read" {
+		evidenceSearchSchema := gin.H{"type": "object", "required": []string{"query"}, "properties": gin.H{
+			"query":         gin.H{"type": "string", "minLength": 1},
+			"sourceType":    gin.H{"type": "string", "enum": []string{"raw", "architecture", "knowledge", "all"}},
+			"sourceTypes":   gin.H{"type": "array", "items": gin.H{"type": "string", "enum": []string{"raw", "architecture", "knowledge"}}},
+			"libraryIds":    gin.H{"type": "array", "items": gin.H{"type": "string"}},
+			"projectIds":    gin.H{"type": "array", "items": gin.H{"type": "string"}},
+			"topK":          gin.H{"type": "integer", "minimum": 1, "maximum": 100},
+			"retrievalMode": gin.H{"type": "string", "enum": []string{"lexical", "vector", "hybrid"}},
+		}}
+		evidenceReadSchema := gin.H{"type": "object", "properties": gin.H{"id": gin.H{"type": "string"}, "uri": gin.H{"type": "string"}, "libraryId": gin.H{"type": "string"}, "projectId": gin.H{"type": "string"}}, "anyOf": []gin.H{{"required": []string{"id"}}, {"required": []string{"uri"}}}}
+		tools = append(tools,
+			gin.H{"name": "evidence_search", "description": "Search raw source chunks, derived project architecture, and stable knowledge within the token's explicit grants. Raw and architecture results remain visibly unreviewed or derived.", "inputSchema": evidenceSearchSchema, "annotations": gin.H{"readOnlyHint": true}},
+			gin.H{"name": "evidence_read", "description": "Read one authoritative evidence citation after rechecking its current source, content hash, path and permission scope.", "inputSchema": evidenceReadSchema, "annotations": gin.H{"readOnlyHint": true}},
+		)
+	}
 	if mode == "manage" {
 		section := gin.H{"type": "object", "required": []string{"id", "heading", "content"}, "properties": gin.H{
 			"id": gin.H{"type": "string"}, "heading": gin.H{"type": "string"}, "content": gin.H{"type": "string"},
@@ -283,8 +299,10 @@ func (s *Server) mcpListResources(ctx context.Context, c *gin.Context, mode stri
 	value, _ := c.Get("identity")
 	id, _ := value.(identity)
 	documents := []model.Document{}
-	if id.Desktop || len(libraries) == 0 {
+	if id.Desktop {
 		documents, err = s.Store.ListDocuments(ctx, "")
+	} else if len(libraries) == 0 {
+		return nil, &mcpRPCError{Code: -32003, Message: "token has no library authorization"}
 	} else {
 		for _, libraryID := range libraries {
 			items, listErr := s.Store.ListDocuments(ctx, libraryID)
@@ -328,16 +346,30 @@ func (s *Server) allowedMCPLibraries(c *gin.Context, requested []string) ([]stri
 		}
 	}
 	if id.Desktop {
+		if len(normalized) > 0 {
+			if err := s.Store.ValidateLibraryIDs(operationContext(c), normalized); err != nil {
+				return nil, errors.New("FORBIDDEN_SCOPE")
+			}
+		}
 		return normalized, nil
 	}
 	allowed := id.Token.LibraryIDs
 	if len(normalized) == 0 {
-		return append([]string{}, allowed...), nil
+		if len(allowed) == 0 {
+			return nil, errors.New("FORBIDDEN_SCOPE")
+		}
+		normalized = append([]string{}, allowed...)
+	}
+	if len(allowed) == 0 {
+		return nil, errors.New("FORBIDDEN_SCOPE")
 	}
 	for _, libraryID := range normalized {
 		if !contains(allowed, libraryID) {
 			return nil, errors.New("FORBIDDEN_SCOPE")
 		}
+	}
+	if err := s.Store.ValidateLibraryIDs(operationContext(c), normalized); err != nil {
+		return nil, errors.New("FORBIDDEN_SCOPE")
 	}
 	return normalized, nil
 }
@@ -347,6 +379,10 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 		return gin.H{"content": []gin.H{{"type": "text", "text": code + ": " + message}}, "isError": true, "structuredContent": gin.H{"code": code, "message": message}}
 	}
 	switch name {
+	case "evidence_search":
+		return s.evidenceSearch(ctx, c, raw)
+	case "evidence_read":
+		return s.evidenceRead(ctx, c, raw)
 	case "knowledge_search":
 		var request model.KnowledgeSearchRequest
 		if err := json.Unmarshal(raw, &request); err != nil || strings.TrimSpace(request.Query) == "" {
@@ -357,9 +393,9 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 			return fail("FORBIDDEN_SCOPE", "requested library is outside token scope")
 		}
 		request.LibraryIDs = libraries
-		result, err := s.Store.SearchKnowledge(ctx, request)
+		result, err := s.searchKnowledgeUnified(ctx, request)
 		if err != nil {
-			return fail("DATABASE_ERROR", err.Error())
+			return fail("RETRIEVAL_ERROR", err.Error())
 		}
 		links := []gin.H{}
 		for _, item := range result.Results {
@@ -693,11 +729,164 @@ func (s *Server) callMCPTool(ctx context.Context, c *gin.Context, mode, name str
 			result.PublishedKnowledge = &published
 			result.Submission, _ = s.Store.GetKAHSubmission(ctx, reviewed.ID)
 			_ = s.Store.AddAudit(ctx, actorName(c), "kah_mcp_knowledge_published", published.URI, map[string]any{"revision": published.Revision, "submissionId": reviewed.ID})
+			s.refreshUnifiedLibrary(s.lifecycleContext(), published.LibraryID)
 			message = "Agent review approved and published the knowledge because confidence exceeded the threshold."
 		}
 		return gin.H{"content": []gin.H{{"type": "text", "text": message}}, "structuredContent": result}
 	default:
 		return fail("METHOD_NOT_FOUND", "unknown or unavailable tool")
+	}
+}
+
+// searchKnowledgeUnified keeps the stable/current-revision contract of
+// knowledge_search while using the same retrieval service as evidence_search.
+// Every hit is hydrated from the current stable row before it is returned, so
+// a stale vector result can never expose an old payload or a draft revision.
+func (s *Server) searchKnowledgeUnified(ctx context.Context, request model.KnowledgeSearchRequest) (model.KnowledgeSearchResponse, error) {
+	if request.Limit < 1 || request.Limit > 100 {
+		request.Limit = 20
+	}
+	if request.Cursor != "" {
+		// The opaque cursor encodes the legacy stable directory ordering. Keep
+		// continuation requests compatible while first-page recall is unified.
+		return s.Store.SearchKnowledge(ctx, request)
+	}
+	if len(request.Statuses) > 0 && !contains(request.Statuses, "stable") {
+		return model.KnowledgeSearchResponse{Results: []model.KnowledgeDirectoryEntry{}}, nil
+	}
+	// Keep the existing stable keyword directory as an authoritative floor.
+	// This is also the compatibility path for an empty, stale, or rebuilding
+	// unified generation: semantic infrastructure must never make an existing
+	// stable knowledge hit disappear.
+	keywordResult, keywordErr := s.Store.SearchKnowledge(ctx, request)
+	if keywordErr != nil {
+		return model.KnowledgeSearchResponse{}, keywordErr
+	}
+	result, err := s.searchUnifiedRetrieval(ctx, model.RetrievalSearchRequest{
+		Query: request.Query,
+		TopK:  retrievalMinInt(request.Limit*4, 100),
+		Filters: model.RetrievalFilters{
+			SourceType:        "knowledge",
+			LibraryIDs:        request.LibraryIDs,
+			AllowedLibraryIDs: request.LibraryIDs,
+		},
+		RetrievalMode: "hybrid",
+	})
+	if err != nil {
+		return model.KnowledgeSearchResponse{}, err
+	}
+	if result.KeywordOnly || !result.SemanticAvailable || len(result.Results) == 0 {
+		return keywordResult, nil
+	}
+	response := model.KnowledgeSearchResponse{Results: []model.KnowledgeDirectoryEntry{}}
+	seen := map[string]bool{}
+	for _, hit := range result.Results {
+		knowledgeID, _, sectionID, parseErr := storage.ParseKnowledgeURI(hit.SourceURI)
+		if parseErr != nil {
+			continue
+		}
+		uri := storage.KnowledgeURI(knowledgeID)
+		item, getErr := s.Store.GetKnowledge(ctx, uri, false)
+		if getErr != nil || item.LibraryID == "" || seen[item.URI] {
+			continue
+		}
+		if request.Language != "" && request.Language != item.Payload.Language {
+			continue
+		}
+		if len(request.Types) > 0 && !contains(request.Types, item.Payload.Type) {
+			continue
+		}
+		if len(request.Tags) > 0 && !knowledgeOverlaps(request.Tags, item.Payload.Tags) {
+			continue
+		}
+		if !knowledgeMatchesClassifications(request.Classifications, item.Payload.Classifications) {
+			continue
+		}
+		matched := []string{}
+		if sectionID != "" {
+			matched = append(matched, sectionID)
+		} else {
+			needle := strings.ToLower(strings.TrimSpace(request.Query))
+			for _, section := range item.Payload.Sections {
+				if needle != "" && strings.Contains(strings.ToLower(section.Content), needle) {
+					matched = append(matched, section.ID)
+				}
+			}
+		}
+		reason := "semantic or hybrid retrieval"
+		if hit.Scores.Lexical > 0 {
+			reason = "keyword or hybrid retrieval"
+		}
+		entry := unifiedKnowledgeDirectoryEntry(item, matched, reason)
+		seen[item.URI] = true
+		response.Results = append(response.Results, entry)
+		if len(response.Results) >= request.Limit {
+			break
+		}
+	}
+	if len(response.Results) == 0 {
+		return keywordResult, nil
+	}
+	// Semantic hits are ordered first, then the authoritative keyword floor
+	// fills any remaining slots. The latter is already filtered to stable
+	// current revisions by Store.SearchKnowledge.
+	for _, item := range keywordResult.Results {
+		if seen[item.URI] {
+			continue
+		}
+		seen[item.URI] = true
+		response.Results = append(response.Results, item)
+		if len(response.Results) >= request.Limit {
+			break
+		}
+	}
+	return response, nil
+}
+
+func knowledgeMatchesClassifications(requested, actual map[string][]string) bool {
+	for key, values := range requested {
+		available := map[string]bool{}
+		for _, value := range actual[key] {
+			available[value] = true
+		}
+		for _, value := range values {
+			if !available[value] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func knowledgeOverlaps(left, right []string) bool {
+	set := map[string]bool{}
+	for _, value := range right {
+		set[value] = true
+	}
+	for _, value := range left {
+		if set[value] {
+			return true
+		}
+	}
+	return false
+}
+
+func unifiedKnowledgeDirectoryEntry(item model.KnowledgeRevision, matched []string, reason string) model.KnowledgeDirectoryEntry {
+	trust := "unverified"
+	if len(item.Payload.Verified) > 0 {
+		trust = "verified"
+	}
+	conflicts := []string{}
+	for _, relation := range item.Payload.Relations {
+		if relation.Type == "contradicts" {
+			conflicts = append(conflicts, relation.Target)
+		}
+	}
+	return model.KnowledgeDirectoryEntry{
+		URI: item.URI, Revision: item.Revision, Title: item.Payload.Title, Description: item.Payload.Description,
+		Type: item.Payload.Type, Subtype: item.Payload.Subtype, Language: item.Payload.Language,
+		PrimaryPath: item.Payload.PrimaryPath, Classifications: item.Payload.Classifications, Tags: item.Payload.Tags,
+		MatchedSectionIDs: matched, MatchReason: reason, Flags: item.Flags, Trust: trust, ConflictURIs: conflicts,
 	}
 }
 

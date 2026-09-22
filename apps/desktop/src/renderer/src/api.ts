@@ -1,4 +1,4 @@
-import type { AgentToken, AuditEntry, BackupRecord, BackupVerification, Document, DocumentBatchRequest, DocumentBatchResult, DocumentDetail, GraphPositionUpdate, GraphSnapshot, GraphWorkspace, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, SavedSearch, Skill, SkillManifest, SkillMappingTarget, SourceWatch, TrashEntry, VirtualFolder } from './types'
+import type { AgentToken, ArchitectureAgent, ArchitectureAgentCredential, ArchitectureAgentLease, ArchitectureAnalysis, ArchitectureArtifact, ArchitectureArtifactInput, ArchitectureDiff, ArchitectureProject, ArchitectureSnapshot, ArchitectureTask, AuditEntry, BackupRecord, BackupVerification, Document, DocumentBatchRequest, DocumentBatchResult, DocumentDetail, EmbeddingModel, EmbeddingModelHealth, GraphPositionUpdate, GraphSnapshot, GraphWorkspace, Job, KAHSubmission, KnowledgeRevision, KnowledgeSearchResponse, Library, Provider, QueryResponse, RetrievalGeneration, RetrievalProgress, RetrievalSearchResponse, SavedSearch, Skill, SkillManifest, SkillMappingTarget, SourceWatch, TrashEntry, VirtualFolder } from './types'
 
 let runtime: RuntimeConfig | undefined
 export async function getRuntime(): Promise<RuntimeConfig> { runtime ??= await window.kah.runtimeConfig(); return runtime }
@@ -19,16 +19,50 @@ async function waitForJob(id: string): Promise<Job> {
   }
   throw new Error(last?.message ? `Skill 导入超时：${last.message}` : 'Skill 导入超时，请检查任务状态')
 }
+export class ApiError extends Error {
+  readonly status: number
+  readonly code?: string
+  readonly retryable?: boolean
+  constructor(message: string, status: number, code?: string, retryable?: boolean) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+    this.retryable = retryable
+  }
+}
+
+function apiHeaders(config: RuntimeConfig, init: RequestInit): HeadersInit {
+  return { 'Content-Type': 'application/json', Authorization: `Bearer ${config.desktopToken}`, ...init.headers }
+}
+
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const config = await getRuntime()
-  const response = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.desktopToken}`, ...init.headers } })
+  const response = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers: apiHeaders(config, init) })
   if (!response.ok) {
     const problem = await response.json().catch(() => ({ detail: response.statusText }))
     const message = problem.detail ?? problem.title ?? `Request failed: ${response.status}`
-    throw new Error(problem.requestId ? `${message}（请求 ID：${problem.requestId}）` : message)
+    throw new ApiError(problem.requestId ? `${message}（请求 ID：${problem.requestId}）` : message, response.status, problem.code, problem.retryable)
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
+}
+
+export async function apiBinary(path: string, init: RequestInit = {}): Promise<Blob> {
+  const config = await getRuntime()
+  const response = await fetch(`${config.apiBaseUrl}${path}`, { ...init, headers: apiHeaders(config, init) })
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({ detail: response.statusText }))
+    const message = problem.detail ?? problem.title ?? `Request failed: ${response.status}`
+    throw new ApiError(message, response.status, problem.code, problem.retryable)
+  }
+  return response.blob()
+}
+
+type EmbeddingModelsResponse = { models: EmbeddingModel[] } | EmbeddingModel[]
+
+function unwrapEmbeddingModels(response: EmbeddingModelsResponse): EmbeddingModel[] {
+  return Array.isArray(response) ? response : response.models
 }
 
 export const client = {
@@ -88,6 +122,13 @@ export const client = {
   saveGraphPositions: (id: string, positions: GraphPositionUpdate[]) => api<{positions: GraphPositionUpdate[]}>(`/graph/workspaces/${id}/positions`, { method: 'PUT', body: JSON.stringify({ positions }) }),
   autoLayoutGraph: (id: string, libraryId: string, overwrite = false) => api<{positions: GraphPositionUpdate[]}>(`/graph/workspaces/${id}/auto-layout`, { method: 'POST', body: JSON.stringify({ libraryId, overwrite }) }),
   knowledgeSearch: (query: string, libraryIds: string[] = []) => api<KnowledgeSearchResponse>('/knowledge/search', { method: 'POST', body: JSON.stringify({ query, libraryIds, limit: 20 }) }),
+  /** Unified desktop retrieval. Source and permission filters are enforced again by the API. */
+  retrievalSearch: (input: { query: string; filters?: { sourceType?: 'all'|'knowledge'|'raw'|'architecture'; libraryIds?: string[]; projectIds?: string[] }; topK?: number; retrievalMode?: 'lexical'|'vector'|'hybrid' }) => api<RetrievalSearchResponse>('/retrieval/search', { method: 'POST', body: JSON.stringify(input) }),
+  retrievalIndexStatus: (libraryId: string) => api<RetrievalGeneration>(`/retrieval/index?libraryId=${encodeURIComponent(libraryId)}`),
+  retrievalIndexProgress: (libraryId: string) => api<RetrievalProgress>(`/retrieval/index/progress?libraryId=${encodeURIComponent(libraryId)}`),
+  rebuildRetrievalIndex: (libraryIds: string[], modelId?: string) => api<{ generations: RetrievalGeneration[] }>('/retrieval/index/rebuild', { method: 'POST', body: JSON.stringify({ libraryIds, ...(modelId ? { modelId } : {}) }) }),
+  cancelRetrievalIndex: (libraryId: string) => api<RetrievalProgress>('/retrieval/index/cancel', { method: 'POST', body: JSON.stringify({ libraryId }) }),
+  query: (input: { query: string; libraryIds?: string[]; filters?: { sourceType?: 'all'|'knowledge'|'raw'|'architecture'; libraryIds?: string[]; projectIds?: string[] }; responseMode?: 'evidence'|'answer'; providerId?: string; topK?: number; retrievalMode?: 'lexical'|'vector'|'hybrid' }) => api<QueryResponse>('/query', { method: 'POST', body: JSON.stringify(input) }),
   knowledge: (uri: string) => api<KnowledgeRevision>('/knowledge/resolve?uri=' + encodeURIComponent(uri)),
   submissions: (libraryId?: string) => api<KAHSubmission[]>('/knowledge/submissions?' + new URLSearchParams({ ...(libraryId ? { libraryId } : {}) }).toString()),
   submission: (id: string) => api<KAHSubmission>('/knowledge/submissions/' + encodeURIComponent(id)),
@@ -99,6 +140,12 @@ export const client = {
   providerModels: (id: string) => api<{models:string[]}>(`/providers/${id}/models`),
   testProvider: (id: string) => api<{models:string[]}>(`/providers/${id}/test`, { method: 'POST' }),
   deleteProvider: (id: string) => api<void>(`/providers/${id}`, { method: 'DELETE' }),
+  embeddingModels: async () => unwrapEmbeddingModels(await api<EmbeddingModelsResponse>('/embedding-models')),
+  installEmbeddingModel: (path: string) => api<EmbeddingModel>('/embedding-models/install', { method: 'POST', body: JSON.stringify({ path }) }),
+  installEmbeddingModelOnline: (modelId: string) => api<EmbeddingModel>('/embedding-models/install-online', { method: 'POST', body: JSON.stringify({ modelId }) }),
+  setEmbeddingModelEnabled: (modelId: string, enabled: boolean) => api<EmbeddingModel>('/embedding-models', { method: 'PATCH', body: JSON.stringify({ modelId, enabled }) }),
+  deleteEmbeddingModel: (modelId: string) => api<EmbeddingModel>('/embedding-models', { method: 'DELETE', body: JSON.stringify({ modelId }) }),
+  embeddingModelHealth: (modelId: string) => api<EmbeddingModelHealth>(`/embedding-models/health?modelId=${encodeURIComponent(modelId)}`),
   tokens: () => api<AgentToken[]>('/tokens'),
   createToken: (name: string, scopes: string[], libraryIds: string[]) => api<AgentToken>('/tokens', { method: 'POST', body: JSON.stringify({ name, scopes, libraryIds }) }),
   revokeToken: (id: string) => api<void>(`/tokens/${id}`, { method: 'DELETE' }),
@@ -110,5 +157,27 @@ export const client = {
   trash: () => api<TrashEntry[]>('/trash'),
   restoreTrash: (kind: TrashEntry['kind'], id: string) => api<void>(`/trash/${kind}/${id}/restore`, { method: 'POST' }),
   purgeTrash: (kind: TrashEntry['kind'], id: string) => api<void>(`/trash/${kind}/${id}`, { method: 'DELETE' }),
-  emptyTrash: () => api<void>('/trash', { method: 'DELETE' })
+  emptyTrash: () => api<void>('/trash', { method: 'DELETE' }),
+
+  architectureProjects: (libraryId?: string) => api<ArchitectureProject[]>(`/projects${libraryId ? `?libraryId=${encodeURIComponent(libraryId)}` : ''}`),
+  architectureProject: (id: string) => api<ArchitectureProject>(`/projects/${encodeURIComponent(id)}`),
+  createArchitectureProject: (input: Omit<ArchitectureProject, 'id'|'createdAt'|'updatedAt'|'deletedAt'|'lastSnapshotId'|'lastSnapshotHash'|'lastScanChanged'|'analysisStatus'|'analysisError'|'currentAnalysisSnapshotId'|'scheduleNextAt'>) => api<ArchitectureProject>('/projects', { method: 'POST', body: JSON.stringify(input) }),
+  updateArchitectureProject: (id: string, input: Partial<Pick<ArchitectureProject, 'name'|'description'|'rootPath'|'excludePatterns'|'scanPeriodSeconds'|'scheduleKind'|'scheduleAnchor'|'allowRemoteCode'|'execution'>>) => api<ArchitectureProject>(`/projects/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteArchitectureProject: (id: string) => api<void>(`/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  scanArchitectureProject: (id: string) => api<ArchitectureTask>(`/projects/${encodeURIComponent(id)}/scan`, { method: 'POST' }),
+  generateArchitectureProject: (id: string) => api<ArchitectureTask>(`/projects/${encodeURIComponent(id)}/generate`, { method: 'POST' }),
+  architectureTasks: (id: string) => api<ArchitectureTask[]>(`/projects/${encodeURIComponent(id)}/tasks`),
+  cancelArchitectureTask: (taskId: string) => api<ArchitectureTask>(`/architecture-tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' }),
+  architectureSnapshots: (id: string) => api<ArchitectureSnapshot[]>(`/projects/${encodeURIComponent(id)}/snapshots`),
+  architectureSnapshot: (projectId: string, snapshotId: string) => api<ArchitectureSnapshot>(`/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(snapshotId)}`),
+  architectureAnalysis: (projectId: string, snapshotId: string) => api<ArchitectureAnalysis>(`/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/analysis`),
+  architectureDiff: (projectId: string, snapshotId: string, fromSnapshotId?: string) => api<ArchitectureDiff>(`/projects/${encodeURIComponent(projectId)}/versions/${encodeURIComponent(snapshotId)}/diff${fromSnapshotId ? `?fromSnapshotId=${encodeURIComponent(fromSnapshotId)}` : ''}`),
+  architectureArtifacts: (projectId: string, snapshotId: string) => api<ArchitectureArtifact[]>(`/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/artifacts`),
+  downloadArchitectureArtifact: (projectId: string, snapshotId: string, kind: string) => apiBinary(`/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/artifacts/${encodeURIComponent(kind)}`),
+  architectureAgents: () => api<ArchitectureAgent[]>('/architecture/agents'),
+  registerArchitectureAgent: (input: { name: string; capabilities: string[]; projectIds: string[] }) => api<ArchitectureAgentCredential>('/architecture/agents', { method: 'POST', body: JSON.stringify(input) }),
+  claimArchitectureAgentTask: (leaseSeconds?: number) => api<ArchitectureAgentLease>('/architecture/agent/tasks/claim', { method: 'POST', body: JSON.stringify({ leaseSeconds }) }),
+  heartbeatArchitectureAgentTask: (input: { taskId: string; leaseToken: string }) => api<void>('/architecture/agent/tasks/heartbeat', { method: 'POST', body: JSON.stringify(input) }),
+  submitArchitectureAgentResult: (input: { taskId: string; generation: number; leaseToken: string; analysis: ArchitectureAnalysis; artifacts: ArchitectureArtifactInput[] }) => api<ArchitectureTask>('/architecture/agent/tasks/result', { method: 'POST', body: JSON.stringify(input) }),
+  submitArchitectureAgentFailure: (input: { taskId: string; leaseToken: string; message: string }) => api<ArchitectureTask>('/architecture/agent/tasks/failure', { method: 'POST', body: JSON.stringify(input) })
 }

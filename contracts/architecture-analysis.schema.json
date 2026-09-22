@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kah://skill/architecture-analysis/v1",
+  "title": "Knowledge Agent Hub architecture analysis",
+  "type": "object",
+  "required": ["schemaVersion", "projectId", "snapshotId", "facts", "inferences", "evidence", "incremental", "coverage"],
+  "properties": {
+    "schemaVersion": {"const": "kah.architecture.analysis.v1"},
+    "projectId": {"type": "string", "minLength": 1},
+    "snapshotId": {"type": "string", "minLength": 1},
+    "facts": {"type": "array", "items": {"$ref": "#/$defs/fact"}},
+    "inferences": {"type": "array", "items": {"$ref": "#/$defs/inference"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "incremental": {"$ref": "#/$defs/incremental"},
+    "coverage": {"$ref": "#/$defs/coverage"}
+  },
+  "$defs": {
+    "fact": {
+      "type": "object",
+      "required": ["id", "subject", "predicate", "object", "evidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "subject": {"type": "string", "minLength": 1},
+        "predicate": {"type": "string", "minLength": 1},
+        "object": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
+    "inference": {
+      "type": "object",
+      "required": ["id", "statement", "evidence", "confidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "statement": {"type": "string", "minLength": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["id", "path", "lineStart", "lineEnd", "contentHash", "kind"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "lineStart": {"type": "integer", "minimum": 1},
+        "lineEnd": {"type": "integer", "minimum": 1},
+        "contentHash": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+        "kind": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "incremental": {
+      "type": "object",
+      "required": ["added", "changed", "deleted", "unchanged"],
+      "properties": {
+        "baseSnapshotId": {"type": "string", "minLength": 1},
+        "added": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "changed": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "deleted": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "unchanged": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["totalFiles", "includedFiles", "ignoredFiles", "secretFiles", "binaryFiles", "outsideLinks", "unknownFiles", "byLanguage", "ignoredReasons"],
+      "properties": {
+        "totalFiles": {"type": "integer", "minimum": 0},
+        "includedFiles": {"type": "integer", "minimum": 0},
+        "ignoredFiles": {"type": "integer", "minimum": 0},
+        "secretFiles": {"type": "integer", "minimum": 0},
+        "binaryFiles": {"type": "integer", "minimum": 0},
+        "outsideLinks": {"type": "integer", "minimum": 0},
+        "unknownFiles": {"type": "integer", "minimum": 0},
+        "byLanguage": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "ignoredReasons": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

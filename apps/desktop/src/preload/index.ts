@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('kah', {
   setTitleBarTheme: (theme: 'light' | 'dark') => ipcRenderer.invoke('window:set-titlebar-theme', theme),
   selectFiles: (kind?: string) => ipcRenderer.invoke('dialog:select-files', kind),
   selectDirectory: () => ipcRenderer.invoke('dialog:select-directory'),
+  saveFile: (defaultPath: string, data: string | Uint8Array) => ipcRenderer.invoke('dialog:save-file', { defaultPath, data }),
   selectBackupCandidate: () => ipcRenderer.invoke('backup:select-candidate'),
   restoreBackup: (path: string) => ipcRenderer.invoke('backup:restore', path),
   openPath: (path: string) => ipcRenderer.invoke('shell:open-path', path),

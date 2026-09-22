@@ -119,11 +119,20 @@ class WorkerTests(unittest.TestCase):
                 {"id": "chunk-database", "text": "数据库索引支持快速检索", "location": {}, "contentHash": "b"},
             ])
             result = index.search("苹果", ["library-1"], 10, "vector")
-            self.assertFalse(result["degraded"])
-            self.assertEqual(result["retrievalMode"], "vector")
+            # Hash features remain a deterministic legacy similarity hint;
+            # without an installed embedding model a vector request must use
+            # the truthful keyword-only effective mode instead of calling the
+            # hash score semantic.
+            self.assertTrue(result["degraded"])
+            self.assertFalse(result["semanticAvailable"])
+            self.assertTrue(result["keywordOnly"])
+            self.assertEqual(result["requestedRetrievalMode"], "vector")
+            self.assertEqual(result["effectiveRetrievalMode"], "lexical")
+            self.assertEqual(result["retrievalMode"], "lexical")
             self.assertEqual(result["results"][0]["id"], "chunk-apple")
-            self.assertGreater(result["results"][0]["vector"], 0)
-            self.assertEqual(result["results"][0]["final"], result["results"][0]["vector"])
+            self.assertEqual(result["results"][0]["vector"], 0.0)
+            self.assertGreater(result["results"][0]["legacySimilarity"], 0)
+            self.assertEqual(result["results"][0]["final"], result["results"][0]["lexical"])
 
     @unittest.skipUnless(importlib.util.find_spec("lancedb"), "LanceDB wheel is not installed")
     def test_lancedb_search_executes_native_queries(self):
@@ -136,6 +145,72 @@ class WorkerTests(unittest.TestCase):
             result = index.search("苹果", ["library-1"], 10, "hybrid")
             self.assertEqual(result["backend"], "lancedb+portable")
             self.assertEqual(result["searchBackend"], "lancedb")
+            self.assertEqual(result["results"][0]["id"], "chunk-apple")
+
+    def test_native_lancedb_keyword_fallback_does_not_query_legacy_hash_vectors(self):
+        class FakeQuery:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def limit(self, _limit):
+                return self
+
+            def to_list(self):
+                return list(self.rows)
+
+        class FakeTable:
+            def __init__(self, rows):
+                self.rows = rows
+                self.vector_calls = 0
+
+            def create_index(self, *_args, **_kwargs):
+                return None
+
+            def search(self, query, query_type=None):
+                if query_type == "fts":
+                    return FakeQuery([dict(row, _score=1.0) for row in self.rows if str(query).lower() in row.get("text", "").lower()])
+                self.vector_calls += 1
+                raise AssertionError("legacy hash vectors must not be queried as semantic vectors")
+
+        class FakeDatabase:
+            def __init__(self, root):
+                self.root = Path(root)
+                self.table = None
+
+            def create_table(self, _name, data, mode="overwrite"):
+                self.root.mkdir(parents=True, exist_ok=True)
+                self.table = FakeTable(list(data))
+                return self.table
+
+            def list_tables(self):
+                return ["chunks"] if self.table is not None else []
+
+            def open_table(self, _name):
+                return self.table
+
+        class FakeLance:
+            def __init__(self):
+                self.databases = {}
+
+            def connect(self, root):
+                return self.databases.setdefault(str(root), FakeDatabase(root))
+
+        with tempfile.TemporaryDirectory() as directory:
+            index = HybridIndex(directory)
+            fake_lance = FakeLance()
+            index.lancedb = fake_lance
+            index.upsert("library-1", "document-1", [
+                {"id": "chunk-apple", "text": "苹果和香蕉是水果", "location": {}, "contentHash": "a"},
+                {"id": "chunk-database", "text": "数据库索引支持快速检索", "location": {}, "contentHash": "b"},
+            ])
+            result = index.search("苹果", ["library-1"], 10, "hybrid")
+            table = next(iter(fake_lance.databases.values())).table
+            self.assertEqual(table.vector_calls, 0)
+            self.assertEqual(result["searchBackend"], "lancedb")
+            self.assertEqual(result["retrievalMode"], "lexical")
+            self.assertTrue(result["degraded"])
+            self.assertFalse(result["semanticAvailable"])
+            self.assertEqual(result["results"][0]["vector"], 0.0)
             self.assertEqual(result["results"][0]["id"], "chunk-apple")
 
     def test_rpc_unknown_method(self):

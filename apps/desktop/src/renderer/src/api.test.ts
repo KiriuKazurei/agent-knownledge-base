@@ -21,6 +21,20 @@ test('includes the diagnostic request ID in an API failure', async () => {
   await expect(client.libraries()).rejects.toThrow('OCR resource missing（请求 ID：trace-0908）')
 })
 
+test('unwraps the embedding model list returned by the real service contract', async () => {
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+  fetchMock
+    .mockResolvedValueOnce(response({ models: [] }))
+    .mockResolvedValueOnce(response([{ id: 'legacy-model', installed: false, enabled: false }]))
+
+  await expect(client.embeddingModels()).resolves.toEqual([])
+  await expect(client.embeddingModels()).resolves.toEqual([
+    { id: 'legacy-model', installed: false, enabled: false },
+  ])
+  expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:48761/api/v1/embedding-models')
+})
+
 test('waits for a Skill import job before resolving', async () => {
   const fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)
@@ -56,4 +70,29 @@ test('sends graph scope and fractional positions without rounding in the client'
 
   expect(fetchMock.mock.calls[0][0]).toContain('/graph?libraryId=library-1&workspaceId=workspace-1&centerNodeId=node-1&depth=2&limit=120')
   expect(fetchMock.mock.calls[1][1]).toMatchObject({ method: 'PUT', body: JSON.stringify({ positions: [{ nodeId: 'node-1', xPct: 37.6254, yPct: 14.0834 }] }) })
+})
+
+test('uses strict project architecture routes and preserves the desktop auth header', async () => {
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+  fetchMock
+    .mockResolvedValueOnce(response([{ id: 'project-1', name: 'Demo', libraryId: 'library-1' }]))
+    .mockResolvedValueOnce(response({ id: 'task-1', projectId: 'project-1', kind: 'scan', status: 'queued' }, 202))
+  await expect(client.architectureProjects('library-1')).resolves.toHaveLength(1)
+  await client.scanArchitectureProject('project-1')
+  expect(fetchMock.mock.calls[0][0]).toBe('http://127.0.0.1:48761/api/v1/projects?libraryId=library-1')
+  expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer desktop-test')
+  expect(fetchMock.mock.calls[1][0]).toBe('http://127.0.0.1:48761/api/v1/projects/project-1/scan')
+  expect(fetchMock.mock.calls[1][1].method).toBe('POST')
+})
+
+test('downloads architecture artifacts as binary data and exposes conflict metadata', async () => {
+  const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, blob: async () => new Blob(['<svg/>'], { type: 'image/svg+xml' }) })
+  vi.stubGlobal('fetch', fetchMock)
+  const blob = await client.downloadArchitectureArtifact('project-1', 'snapshot-1', 'svg')
+  expect(blob).toBeInstanceOf(Blob)
+  expect(fetchMock.mock.calls[0][0]).toContain('/projects/project-1/snapshots/snapshot-1/artifacts/svg')
+  expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer desktop-test')
+  vi.mocked(fetchMock).mockResolvedValueOnce(response({ detail: 'active task', code: 'project_scan_active', retryable: false }, 409))
+  await expect(client.scanArchitectureProject('project-1')).rejects.toMatchObject({ status: 409, code: 'project_scan_active' })
 })

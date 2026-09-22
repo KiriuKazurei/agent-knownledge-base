@@ -5,8 +5,9 @@ info:
   description: |
     Desktop-only Source and KAH knowledge-management API. Agent access is MCP
     Streamable HTTP only: POST /mcp/read for retrieval and POST /mcp/manage for
-    validation and draft submission. Those JSON-RPC MCP endpoints are described
-    by their MCP tools and resources, not this OpenAPI document.
+    validation and draft submission. The read server exposes knowledge_search,
+    evidence_search, and evidence_read; evidence scopes are explicit token
+    grants and always require mcp_read.
   contact:
     name: Knowledge Agent Hub maintainers
     url: https://github.com/KiriuKazurei/agent-knownledge-base
@@ -193,6 +194,91 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/OcrHealth'}
         '503': {description: OCR worker unavailable}
+  /embedding-models:
+    get:
+      operationId: listEmbeddingModels
+      responses:
+        '200':
+          description: Installed and fixed-catalog local embedding models
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelList'}
+        '503': {description: Embedding worker unavailable}
+    patch:
+      operationId: setEmbeddingModelEnabled
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmbeddingModelActionRequest'}
+      responses:
+        '200':
+          description: Updated local embedding model state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelStatus'}
+        '400': {description: Invalid package state or model action}
+    delete:
+      operationId: deleteEmbeddingModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeleteEmbeddingModelRequest'}
+      responses:
+        '200':
+          description: Local model removed after it is disabled
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelStatus'}
+        '400': {description: Active model or invalid model id}
+  /embedding-models/install:
+    post:
+      operationId: importEmbeddingModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmbeddingModelInstallRequest'}
+      responses:
+        '200':
+          description: Verified offline model package installed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelStatus'}
+        '400':
+          description: Invalid archive, manifest, resource hash or size
+  /embedding-models/install-online:
+    post:
+      operationId: installCatalogEmbeddingModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EmbeddingModelOnlineInstallRequest'}
+      responses:
+        '200':
+          description: Verified fixed-catalog model installed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelStatus'}
+        '400': {description: Catalog resources are unavailable or failed verification}
+  /embedding-models/health:
+    get:
+      operationId: getEmbeddingModelHealth
+      parameters:
+        - in: query
+          name: modelId
+          required: true
+          schema: {type: string, minLength: 1}
+      responses:
+        '200':
+          description: Local model and CPU runtime health
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EmbeddingModelHealth'}
+        '400': {description: Missing model id}
+        '503': {description: Embedding worker unavailable}
   /skills:
     get:
       operationId: listSkills
@@ -642,6 +728,106 @@ paths:
             schema: {$ref: '#/components/schemas/RebuildIndexRequest'}
       responses:
         '202': {description: Rebuild queued}
+  /retrieval/search:
+    post:
+      operationId: searchUnifiedRetrieval
+      description: Scope-checked retrieval over stable knowledge, raw source chunks, and project architecture evidence. Answer generation is not performed here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RetrievalSearchRequest'}
+      responses:
+        '200':
+          description: Unified retrieval results with source and model/degradation metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RetrievalSearchResponse'}
+        '403': {description: Library or project scope denied}
+  /query:
+    post:
+      operationId: queryDesktopKnowledge
+      description: Desktop citation search and optional answer generation. Retrieval uses the same unified service as MCP evidence_search; answer generation is a separate configured provider step.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryRequest'}
+      responses:
+        '200':
+          description: Unified citations with source, review, and degradation metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueryResponse'}
+        '403': {description: Library or project scope denied}
+  /query/stream:
+    post:
+      operationId: streamDesktopKnowledgeQuery
+      description: Streaming form of the desktop query endpoint. Retrieval events use the same unified citation service; answer generation remains optional.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueryRequest'}
+      responses:
+        '200':
+          description: Server-sent retrieval, citation, answer, and complete events
+          content:
+            text/event-stream: {schema: {type: string}}
+  /retrieval/index/rebuild:
+    post:
+      operationId: rebuildUnifiedRetrievalIndex
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RetrievalRebuildRequest'}
+      responses:
+        '200':
+          description: Validated generations switched atomically per library
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [generations]
+                properties:
+                  generations: {type: array, items: {$ref: '#/components/schemas/RetrievalGeneration'}}
+  /retrieval/index:
+    get:
+      operationId: getUnifiedRetrievalIndex
+      parameters:
+        - {in: query, name: libraryId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Active retrieval generation metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RetrievalGeneration'}
+  /retrieval/index/progress:
+    get:
+      operationId: getUnifiedRetrievalIndexProgress
+      parameters:
+        - {in: query, name: libraryId, required: true, schema: {type: string, format: uuid}}
+      responses:
+        '200':
+          description: Rebuild progress
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RetrievalProgress'}
+  /retrieval/index/cancel:
+    post:
+      operationId: cancelUnifiedRetrievalIndex
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [libraryId]
+              properties:
+                libraryId: {type: string, format: uuid}
+      responses:
+        '200': {description: Cancellation requested; the active generation remains serving}
   /saved-searches:
     get:
       operationId: listSavedSearches
@@ -943,8 +1129,9 @@ paths:
               required: [name, scopes]
               properties:
                 name: {type: string}
-                scopes: {type: array, minItems: 1, items: {enum: [mcp_read, mcp_manage]}}
+                scopes: {type: array, minItems: 1, uniqueItems: true, items: {enum: [mcp_read, mcp_manage, evidence_search, evidence_read]}}
                 libraryIds: {type: array, items: {type: string, format: uuid}}
+                projectIds: {type: array, items: {type: string, format: uuid}, description: Explicit project grants for architecture evidence; library grants do not imply project access}
       responses:
         '201':
           description: Token, including the one-time plaintext secret
@@ -1075,10 +1262,373 @@ paths:
       responses:
         '200': {description: Backup checksum and manifest are valid}
         '400': {description: 'Backup is missing, corrupt, or incompatible'}
+  /projects:
+    get:
+      operationId: listArchitectureProjects
+      parameters:
+        - {in: query, name: libraryId, schema: {type: string}}
+      responses:
+        '200':
+          description: Desktop architecture projects
+          content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ArchitectureProject'}}}}
+    post:
+      operationId: createArchitectureProject
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateArchitectureProjectRequest'}}}
+      responses:
+        '201': {description: Created project, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureProject'}}}}
+  /projects/{projectId}:
+    parameters: [{in: path, name: projectId, required: true, schema: {type: string, format: uuid}}]
+    get:
+      operationId: getArchitectureProject
+      responses: {'200': {description: Project, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureProject'}}}}}
+    patch:
+      operationId: updateArchitectureProject
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/UpdateArchitectureProjectRequest'}}}}
+      responses: {'200': {description: Updated project, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureProject'}}}}}
+    delete:
+      operationId: deleteArchitectureProject
+      responses: {'204': {description: Project moved to trash}}
+  /projects/{projectId}/scan:
+    post:
+      operationId: scanArchitectureProject
+      parameters: [{in: path, name: projectId, required: true, schema: {type: string, format: uuid}}]
+      responses: {'202': {description: Queued scan task, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureTask'}}}}}
+  /projects/{projectId}/generate:
+    post:
+      operationId: generateArchitectureProject
+      parameters: [{in: path, name: projectId, required: true, schema: {type: string, format: uuid}}]
+      responses: {'202': {description: Queued architecture generation task, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureTask'}}}}}
+  /projects/{projectId}/tasks:
+    get:
+      operationId: listArchitectureTasks
+      parameters: [{in: path, name: projectId, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Tasks, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ArchitectureTask'}}}}}}
+  /projects/{projectId}/snapshots:
+    get:
+      operationId: listArchitectureSnapshots
+      parameters: [{in: path, name: projectId, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Immutable snapshots, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ArchitectureSnapshot'}}}}}}
+  /projects/{projectId}/snapshots/{snapshotId}:
+    get:
+      operationId: getArchitectureSnapshot
+      parameters:
+        - {in: path, name: projectId, required: true, schema: {type: string, format: uuid}}
+        - {in: path, name: snapshotId, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Snapshot metadata and inventory, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureSnapshot'}}}}}
+  /projects/{projectId}/snapshots/{snapshotId}/analysis:
+    parameters:
+      - {in: path, name: projectId, required: true, schema: {type: string, format: uuid}}
+      - {in: path, name: snapshotId, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: getArchitectureAnalysis
+      responses: {'200': {description: Validated architecture analysis, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAnalysis'}}}}}
+    post:
+      operationId: saveArchitectureAnalysis
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAnalysis'}}}}
+      responses: {'201': {description: Saved analysis, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAnalysis'}}}}}
+  /projects/{projectId}/snapshots/{snapshotId}/artifacts:
+    get:
+      operationId: listArchitectureArtifacts
+      parameters:
+        - {in: path, name: projectId, required: true, schema: {type: string, format: uuid}}
+        - {in: path, name: snapshotId, required: true, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Generated architecture artifacts, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ArchitectureArtifact'}}}}}}
+  /projects/{projectId}/snapshots/{snapshotId}/artifacts/{kind}:
+    get:
+      operationId: downloadArchitectureArtifact
+      parameters:
+        - {in: path, name: projectId, required: true, schema: {type: string, format: uuid}}
+        - {in: path, name: snapshotId, required: true, schema: {type: string, format: uuid}}
+        - {in: path, name: kind, required: true, schema: {type: string, enum: [document, diagram_json, html, svg, png]}}
+      responses: {'200': {description: Artifact bytes}}
+  /projects/{projectId}/versions/{snapshotId}/diff:
+    get:
+      operationId: getArchitectureDiff
+      parameters:
+        - {in: path, name: projectId, required: true, schema: {type: string, format: uuid}}
+        - {in: path, name: snapshotId, required: true, schema: {type: string, format: uuid}}
+        - {in: query, name: fromSnapshotId, schema: {type: string, format: uuid}}
+      responses: {'200': {description: Snapshot file and validated analysis diff, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureDiff'}}}}}
+  /architecture-tasks/{taskId}/cancel:
+    post:
+      operationId: cancelArchitectureTask
+      parameters: [{in: path, name: taskId, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Cancelled task, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureTask'}}}}}
+  /architecture/agents:
+    post:
+      operationId: registerArchitectureAgent
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentRegistration'}}}}
+      responses: {'201': {description: Agent credential, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentCredential'}}}}}
+    get:
+      operationId: listArchitectureAgents
+      responses: {'200': {description: Registered agents, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/ArchitectureAgent'}}}}}}
+  /architecture/agent/tasks/claim:
+    post:
+      security: [{architectureAgentAuth: []}]
+      operationId: claimArchitectureAgentTask
+      responses: {'200': {description: Claimed task, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentLease'}}}}, '204': {description: No queued task}}
+  /architecture/agent/tasks/heartbeat:
+    post:
+      security: [{architectureAgentAuth: []}]
+      operationId: heartbeatArchitectureAgentTask
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentHeartbeat'}}}}
+      responses: {'204': {description: Lease renewed}}
+  /architecture/agent/tasks/result:
+    post:
+      security: [{architectureAgentAuth: []}]
+      operationId: submitArchitectureAgentResult
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentResult'}}}}
+      responses: {'200': {description: Result accepted, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureTask'}}}}}
+  /architecture/agent/tasks/failure:
+    post:
+      security: [{architectureAgentAuth: []}]
+      operationId: submitArchitectureAgentFailure
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureAgentFailure'}}}}
+      responses: {'200': {description: Failure recorded, content: {application/json: {schema: {$ref: '#/components/schemas/ArchitectureTask'}}}}}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
+    architectureAgentAuth: {type: http, scheme: bearer, description: Dedicated architecture agent secret; not interchangeable with MCP tokens}
   schemas:
+    ArchitectureExecution:
+      type: object
+      required: [executor, allowExternal, timeoutSeconds]
+      properties:
+        providerId: {type: string}
+        executor: {type: string, enum: [none, auto, codex, mcp, provider]}
+        codexPath: {type: string}
+        codexModel: {type: string}
+        allowExternal: {type: boolean}
+        timeoutSeconds: {type: integer, minimum: 0, maximum: 86400}
+    ArchitectureProject:
+      type: object
+      required: [id, libraryId, name, rootPath, excludePatterns, scanPeriodSeconds, allowRemoteCode, execution, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        libraryId: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 160}
+        description: {type: string, maxLength: 4000}
+        rootPath: {type: string}
+        excludePatterns: {type: array, items: {type: string}, maxItems: 200}
+        scanPeriodSeconds: {type: integer, minimum: 0, maximum: 31536000}
+        scheduleKind: {type: string, enum: [manual, daily, weekly, interval]}
+        scheduleAnchor: {type: string, format: date-time}
+        scheduleNextAt: {type: string, format: date-time}
+        allowRemoteCode: {type: boolean, description: Remote code execution policy for later stages}
+        execution: {$ref: '#/components/schemas/ArchitectureExecution'}
+        lastSnapshotId: {type: string, format: uuid}
+        lastSnapshotHash: {type: string}
+        lastScanChanged: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    CreateArchitectureProjectRequest:
+      type: object
+      required: [libraryId, name, rootPath]
+      properties:
+        libraryId: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 160}
+        description: {type: string, maxLength: 4000}
+        rootPath: {type: string}
+        excludePatterns: {type: array, items: {type: string}, maxItems: 200}
+        scanPeriodSeconds: {type: integer, minimum: 0, maximum: 31536000}
+        scheduleKind: {type: string, enum: [manual, daily, weekly, interval], default: manual}
+        scheduleAnchor: {type: string, format: date-time}
+        allowRemoteCode: {type: boolean, default: false}
+        execution: {$ref: '#/components/schemas/ArchitectureExecution'}
+    UpdateArchitectureProjectRequest:
+      type: object
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 160}
+        description: {type: string, maxLength: 4000}
+        rootPath: {type: string}
+        excludePatterns: {type: array, items: {type: string}, maxItems: 200}
+        scanPeriodSeconds: {type: integer, minimum: 0, maximum: 31536000}
+        scheduleKind: {type: string, enum: [manual, daily, weekly, interval]}
+        scheduleAnchor: {type: string, format: date-time}
+        allowRemoteCode: {type: boolean}
+        execution: {$ref: '#/components/schemas/ArchitectureExecution'}
+    ArchitectureCoverage:
+      type: object
+      additionalProperties: true
+    ArchitectureFile:
+      type: object
+      required: [path, language, size, lineStart, lineEnd, lineCount, contentHash, entryPoint]
+      properties:
+        path: {type: string}
+        language: {type: string}
+        size: {type: integer, minimum: 0}
+        lineStart: {type: integer, minimum: 1}
+        lineEnd: {type: integer, minimum: 0}
+        lineCount: {type: integer, minimum: 0}
+        contentHash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        gitStatus: {type: string}
+        entryPoint: {type: boolean}
+        dependencyFiles: {type: array, items: {type: string}}
+        containerFiles: {type: array, items: {type: string}}
+        detection: {type: string}
+    ArchitectureModule:
+      type: object
+      required: [name, language, rootPath, dependencies, entryPoints, dependencyFiles, containerFiles, unknown, evidencePaths]
+      properties:
+        name: {type: string}
+        language: {type: string}
+        rootPath: {type: string}
+        version: {type: string}
+        dependencies: {type: array, items: {type: string}}
+        dependencyVersions: {type: object, additionalProperties: {type: string}}
+        entryPoints: {type: array, items: {type: string}}
+        dependencyFiles: {type: array, items: {type: string}}
+        containerFiles: {type: array, items: {type: string}}
+        unknown: {type: boolean}
+        evidencePaths: {type: array, items: {type: string}}
+    ArchitectureSnapshot:
+      type: object
+      required: [id, projectId, generation, status, contentHash, gitDirty, gitChangedPaths, fileCount, moduleCount, unknownCount, coverage, files, modules, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        generation: {type: integer, minimum: 1}
+        status: {type: string, enum: [complete, unchanged]}
+        contentHash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        gitRevision: {type: string}
+        gitDirty: {type: boolean}
+        gitChangedPaths: {type: array, items: {type: string}}
+        fileCount: {type: integer, minimum: 0}
+        moduleCount: {type: integer, minimum: 0}
+        unknownCount: {type: integer, minimum: 0}
+        coverage: {$ref: '#/components/schemas/ArchitectureCoverage'}
+        files: {type: array, items: {$ref: '#/components/schemas/ArchitectureFile'}}
+        modules: {type: array, items: {$ref: '#/components/schemas/ArchitectureModule'}}
+        createdAt: {type: string, format: date-time}
+    ArchitectureTask:
+      type: object
+      required: [id, projectId, kind, status, generation, cancelRequested, createdAt, updatedAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        kind: {type: string, enum: [scan, analysis, mcp]}
+        status: {type: string, enum: [queued, running, cancellation_requested, completed, failed, cancelled]}
+        generation: {type: integer, minimum: 1}
+        input: {$ref: '#/components/schemas/ArchitectureAnalysisRequest'}
+        snapshotId: {type: string, format: uuid}
+        cancelRequested: {type: boolean}
+        errorCode: {type: string}
+        message: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    ArchitectureArtifact:
+      type: object
+      required: [id, projectId, snapshotId, kind, fileName, contentType, relativePath, contentHash, size, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        snapshotId: {type: string, format: uuid}
+        kind: {type: string, enum: [document, diagram_json, html, svg, png]}
+        fileName: {type: string}
+        contentType: {type: string}
+        renderer: {type: string, description: Producer identifier; fallback renderers are explicit.}
+        rendererError: {type: string, description: Non-empty when the producer degraded or reported a health issue.}
+        relativePath: {type: string}
+        contentHash: {type: string, pattern: '^[0-9a-f]{64}$'}
+        size: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
+    ArchitectureAnalysis:
+      type: object
+      required: [schemaVersion, projectId, snapshotId, facts, inferences, evidence, incremental, coverage]
+      properties:
+        schemaVersion: {type: string, const: kah.architecture.analysis.v1}
+        projectId: {type: string, format: uuid}
+        snapshotId: {type: string, format: uuid}
+        facts: {type: array, items: {type: object}}
+        inferences: {type: array, items: {type: object}}
+        evidence: {type: array, items: {type: object}}
+        incremental: {type: object}
+        coverage: {$ref: '#/components/schemas/ArchitectureCoverage'}
+    ArchitectureAnalysisRequest:
+      type: object
+      required: [project, snapshot, incremental]
+      properties:
+        project: {$ref: '#/components/schemas/ArchitectureProject'}
+        snapshot: {$ref: '#/components/schemas/ArchitectureSnapshot'}
+        incremental:
+          type: object
+          required: [added, changed, deleted, unchanged]
+          properties:
+            baseSnapshotId: {type: string, format: uuid}
+            added: {type: array, items: {type: string}}
+            changed: {type: array, items: {type: string}}
+            deleted: {type: array, items: {type: string}}
+            unchanged: {type: array, items: {type: string}}
+        prompt: {type: string}
+    ArchitectureDiff:
+      type: object
+      required: [projectId, fromSnapshotId, toSnapshotId, added, changed, deleted, unchanged]
+      properties:
+        projectId: {type: string, format: uuid}
+        fromSnapshotId: {type: string, format: uuid}
+        toSnapshotId: {type: string, format: uuid}
+        added: {type: array, items: {type: string}}
+        changed: {type: array, items: {type: string}}
+        deleted: {type: array, items: {type: string}}
+        unchanged: {type: array, items: {type: string}}
+        analysis: {$ref: '#/components/schemas/ArchitectureAnalysis'}
+    ArchitectureAgent:
+      type: object
+      required: [id, name, capabilities, projectIds, status, lastHeartbeat, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        capabilities: {type: array, items: {type: string}}
+        projectIds: {type: array, items: {type: string, format: uuid}}
+        status: {type: string}
+        lastHeartbeat: {type: string, format: date-time}
+        createdAt: {type: string, format: date-time}
+    ArchitectureAgentRegistration:
+      type: object
+      required: [name, capabilities, projectIds]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 200}
+        capabilities: {type: array, items: {type: string}, maxItems: 50}
+        projectIds: {type: array, items: {type: string, format: uuid}, minItems: 1, maxItems: 100}
+    ArchitectureAgentCredential:
+      type: object
+      required: [agent, secret]
+      properties:
+        agent: {$ref: '#/components/schemas/ArchitectureAgent'}
+        secret: {type: string}
+    ArchitectureAgentLease:
+      type: object
+      required: [agentId, task, leaseToken, leaseExpires]
+      properties:
+        agentId: {type: string, format: uuid}
+        task: {$ref: '#/components/schemas/ArchitectureTask'}
+        leaseToken: {type: string}
+        leaseExpires: {type: string, format: date-time}
+    ArchitectureAgentHeartbeat:
+      type: object
+      required: [taskId, leaseToken]
+      properties:
+        taskId: {type: string, format: uuid}
+        leaseToken: {type: string}
+    ArchitectureAgentResult:
+      type: object
+      required: [taskId, leaseToken, generation, analysis]
+      properties:
+        taskId: {type: string, format: uuid}
+        leaseToken: {type: string}
+        generation: {type: integer, minimum: 1}
+        analysis: {$ref: '#/components/schemas/ArchitectureAnalysis'}
+        artifacts: {type: array, items: {type: object}}
+    ArchitectureAgentFailure:
+      type: object
+      required: [taskId, leaseToken, message]
+      properties:
+        taskId: {type: string, format: uuid}
+        leaseToken: {type: string}
+        message: {type: string, maxLength: 4000}
     Health:
       type: object
       required: [status, version, worker]
@@ -1108,6 +1658,92 @@ components:
         schema: {type: string}
         version: {type: string}
         fileCount: {type: integer, minimum: 0}
+    EmbeddingModelFile:
+      type: object
+      required: [role, path, sha256, size]
+      properties:
+        role: {type: string, enum: [model, tokenizer, vocab, license, config, resource]}
+        path: {type: string, minLength: 1}
+        sha256: {type: string, pattern: '^[0-9a-fA-F]{64}$'}
+        size: {type: integer, minimum: 0, maximum: 524288000}
+    EmbeddingModel:
+      type: object
+      required: [id, version, license, dimension, maxTokens, runtime, pooling, installed, enabled, sizeBytes, runtimeBytes]
+      properties:
+        id: {type: string}
+        version: {type: string}
+        upstream: {type: string, format: uri}
+        upstreamCommit: {type: string}
+        license: {type: string}
+        dimension: {type: integer, minimum: 1}
+        maxTokens: {type: integer, minimum: 1}
+        tokenizer: {type: object, additionalProperties: true}
+        pooling: {type: object, additionalProperties: true}
+        queryPrefix: {type: string}
+        passagePrefix: {type: string}
+        runtime: {type: object, additionalProperties: true}
+        files: {type: array, items: {$ref: '#/components/schemas/EmbeddingModelFile'}}
+        installed: {type: boolean}
+        enabled: {type: boolean}
+        sizeBytes: {type: integer, minimum: 0}
+        runtimeBytes: {type: integer, minimum: 0}
+        health: {$ref: '#/components/schemas/EmbeddingModelHealth'}
+        onlineInstall: {type: boolean}
+        onlineDisabledReason: {type: string}
+    EmbeddingModelList:
+      type: object
+      required: [models]
+      properties:
+        models: {type: array, items: {$ref: '#/components/schemas/EmbeddingModel'}}
+    EmbeddingModelStatus:
+      type: object
+      required: [id, installed, enabled, sizeBytes, runtimeBytes]
+      properties:
+        id: {type: string}
+        version: {type: string}
+        installed: {type: boolean}
+        enabled: {type: boolean}
+        loaded: {type: boolean}
+        sizeBytes: {type: integer, minimum: 0}
+        runtimeBytes: {type: integer, minimum: 0}
+        health: {$ref: '#/components/schemas/EmbeddingModelHealth'}
+    EmbeddingModelHealth:
+      type: object
+      required: [available, modelId]
+      properties:
+        available: {type: boolean}
+        modelId: {type: string}
+        version: {type: string}
+        dimension: {type: integer, minimum: 1}
+        runtime: {type: string}
+        runtimeVersion: {type: string}
+        expectedRuntimeVersion: {type: string}
+        tokenizerRuntimeVersion: {type: string}
+        expectedTokenizerRuntimeVersion: {type: string}
+        runtimeBytes: {type: integer, minimum: 0}
+        runtimeMismatch: {type: array, items: {type: string}}
+        error: {type: string}
+    EmbeddingModelInstallRequest:
+      type: object
+      required: [path]
+      properties:
+        path: {type: string, minLength: 1}
+    EmbeddingModelOnlineInstallRequest:
+      type: object
+      required: [modelId]
+      properties:
+        modelId: {type: string, minLength: 1}
+    EmbeddingModelActionRequest:
+      type: object
+      required: [modelId, enabled]
+      properties:
+        modelId: {type: string, minLength: 1}
+        enabled: {type: boolean}
+    DeleteEmbeddingModelRequest:
+      type: object
+      required: [modelId]
+      properties:
+        modelId: {type: string, minLength: 1}
     Library:
       type: object
       required: [id, name, icon, color, tags, favorite, allowRemoteModels, autoSummarizeImports, importConversionMode, autoReviewAgentSubmissions, createdAt, updatedAt]
@@ -1502,6 +2138,148 @@ components:
       required: [libraryId]
       properties:
         libraryId: {type: string}
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 8000}
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        projectIds: {type: array, items: {type: string, format: uuid}, description: Optional architecture project scope within the selected libraries}
+        sourceType: {enum: [all, knowledge, raw, architecture], default: all}
+        sourceTypes: {type: array, uniqueItems: true, items: {enum: [knowledge, raw, architecture]}}
+        tags: {type: array, items: {type: string}}
+        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
+        retrievalMode: {enum: [lexical, vector, hybrid], default: hybrid}
+        responseMode: {enum: [evidence, answer], default: evidence}
+        providerId: {type: string, format: uuid}
+    QueryResponse:
+      type: object
+      required: [requestId, evidence, semanticAvailable, keywordOnly, degraded, retrievalMode]
+      properties:
+        requestId: {type: string, format: uuid}
+        evidence: {type: array, items: {$ref: '#/components/schemas/RetrievalResult'}}
+        requiredSkills: {type: array, items: {$ref: '#/components/schemas/Skill'}}
+        answer: {type: string}
+        source: {type: string}
+        generation: {type: string}
+        semanticAvailable: {type: boolean}
+        keywordOnly: {type: boolean}
+        modelId: {type: string}
+        modelVersion: {type: string}
+        configHash: {type: string}
+        dimension: {type: integer, minimum: 0}
+        corpusComplete: {type: boolean}
+        needsRebuild: {type: boolean}
+        retrievalMode: {enum: [lexical, vector, hybrid]}
+        degraded: {type: boolean}
+        degradedReason: {type: string}
+    RetrievalChunk:
+      type: object
+      required: [id, text, sourceType, reviewStatus, libraryId, contentHash]
+      properties:
+        id: {type: string}
+        documentId: {type: string}
+        text: {type: string, minLength: 1}
+        sourceType: {enum: [knowledge, raw, architecture]}
+        reviewStatus: {enum: [stable, unreviewed, derived, deprecated]}
+        libraryId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        sourceURI: {type: string}
+        title: {type: string}
+        filePath: {type: string}
+        lineStart: {type: integer, minimum: 0}
+        lineEnd: {type: integer, minimum: 0}
+        contentHash: {type: string, pattern: '^[A-Fa-f0-9]{64}$'}
+        symbol: {type: string}
+        language: {type: string}
+        permissionScope: {enum: [library, project]}
+        location: {type: object, additionalProperties: true}
+        tokenCount: {type: integer, minimum: 0}
+        tokenLimit: {type: integer, minimum: 0}
+        truncated: {type: boolean}
+    RetrievalFilters:
+      type: object
+      properties:
+        sourceType: {enum: [all, knowledge, raw, architecture], default: all}
+        sourceTypes: {type: array, uniqueItems: true, items: {enum: [knowledge, raw, architecture]}}
+        reviewStatuses: {type: array, uniqueItems: true, items: {enum: [stable, unreviewed, derived, deprecated]}}
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        projectIds: {type: array, items: {type: string, format: uuid}}
+        allowRaw: {type: boolean, description: Server-controlled for desktop; never grants an Agent token new scope}
+    RetrievalSearchRequest:
+      type: object
+      required: [query]
+      properties:
+        query: {type: string, minLength: 1, maxLength: 8000}
+        filters: {$ref: '#/components/schemas/RetrievalFilters'}
+        topK: {type: integer, minimum: 1, maximum: 100, default: 10}
+        retrievalMode: {enum: [lexical, vector, hybrid], default: hybrid}
+    RetrievalResult:
+      allOf:
+        - {$ref: '#/components/schemas/RetrievalChunk'}
+        - type: object
+          required: [scores]
+          properties:
+            scores:
+              type: object
+              required: [lexical, vector, fusion, final]
+              properties:
+                lexical: {type: number}
+                vector: {type: number}
+                fusion: {type: number}
+                final: {type: number}
+                symbolMatch: {type: boolean}
+    RetrievalSearchResponse:
+      type: object
+      required: [results, semanticAvailable, keywordOnly, degraded, retrievalMode]
+      properties:
+        results: {type: array, items: {$ref: '#/components/schemas/RetrievalResult'}}
+        source: {type: string}
+        generation: {type: string}
+        semanticAvailable: {type: boolean}
+        keywordOnly: {type: boolean}
+        degraded: {type: boolean}
+        degradedReason: {type: string}
+        modelId: {type: string}
+        modelVersion: {type: string}
+        configHash: {type: string}
+        dimension: {type: integer, minimum: 0}
+        corpusComplete: {type: boolean}
+        needsRebuild: {type: boolean}
+        retrievalMode: {enum: [lexical, vector, hybrid]}
+    RetrievalGeneration:
+      type: object
+      required: [libraryId, generation, semanticAvailable]
+      properties:
+        libraryId: {type: string, format: uuid}
+        generation: {type: string}
+        status: {type: string}
+        count: {type: integer, minimum: 0}
+        semanticAvailable: {type: boolean}
+        keywordOnly: {type: boolean}
+        degraded: {type: boolean}
+        degradedReason: {type: string}
+        modelId: {type: string}
+        modelVersion: {type: string}
+        configHash: {type: string}
+        dimension: {type: integer, minimum: 0}
+        corpusComplete: {type: boolean}
+        needsRebuild: {type: boolean}
+    RetrievalProgress:
+      type: object
+      required: [libraryId, status, completed, total]
+      properties:
+        libraryId: {type: string, format: uuid}
+        generation: {type: string}
+        status: {type: string, enum: [idle, running, completed, failed, cancelled, cancellation_requested, unknown]}
+        completed: {type: integer, minimum: 0}
+        total: {type: integer, minimum: 0}
+        error: {type: string}
+    RetrievalRebuildRequest:
+      type: object
+      properties:
+        libraryIds: {type: array, items: {type: string, format: uuid}}
+        modelId: {type: string}
     SkillFile:
       type: object
       required: [path, size, sha256, mediaType]
@@ -1583,8 +2361,9 @@ components:
       properties:
         id: {type: string, format: uuid}
         name: {type: string}
-        scopes: {type: array, minItems: 1, items: {type: string, enum: [mcp_read, mcp_manage]}}
+        scopes: {type: array, minItems: 1, uniqueItems: true, items: {type: string, enum: [mcp_read, mcp_manage, evidence_search, evidence_read]}}
         libraryIds: {type: array, items: {type: string}}
+        projectIds: {type: array, items: {type: string}, description: Explicit architecture-project grants}
         secret: {type: string, description: Returned once at creation}
         createdAt: {type: string, format: date-time}
         revokedAt: {type: string, format: date-time}

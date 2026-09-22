@@ -55,7 +55,7 @@ type BackupManifest struct {
 }
 
 func Open(dataRoot string) (*Store, error) {
-	for _, name := range []string{"objects", "indexes", "logs", "backups", "staging", "skills"} {
+	for _, name := range []string{"objects", "indexes", "logs", "backups", "staging", "skills", "architecture"} {
 		if err := os.MkdirAll(filepath.Join(dataRoot, name), 0o750); err != nil {
 			return nil, err
 		}
@@ -100,6 +100,13 @@ func (s *Store) migrate() error {
 			ordinal INTEGER NOT NULL, text TEXT NOT NULL, location_json TEXT NOT NULL, content_hash TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_chunks_document ON chunks(document_id, ordinal)`,
+		`CREATE TABLE IF NOT EXISTS retrieval_index_state (
+			library_id TEXT PRIMARY KEY REFERENCES libraries(id) ON DELETE CASCADE,
+			status TEXT NOT NULL DEFAULT 'unknown', error TEXT NOT NULL DEFAULT '',
+			active_generation TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL DEFAULT '',
+			updated_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_index_state_status ON retrieval_index_state(status, updated_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS skills (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
 			compatibility TEXT NOT NULL DEFAULT '', license TEXT NOT NULL DEFAULT '', metadata_json TEXT NOT NULL DEFAULT '{}',
@@ -141,7 +148,7 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS agent_tokens (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, scopes_json TEXT NOT NULL,
-			library_ids_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, revoked_at TEXT
+			library_ids_json TEXT NOT NULL DEFAULT '[]', project_ids_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, revoked_at TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS providers (
 			id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL, base_url TEXT NOT NULL,
@@ -165,6 +172,85 @@ func (s *Store) migrate() error {
 			root_path TEXT NOT NULL, recursive INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 1,
 			last_scan_at TEXT, last_message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 		)`,
+		// Architecture projects and snapshots are intentionally separate from
+		// document imports. Snapshot rows are append-only: later scans create a
+		// new generation and never mutate a prior source of evidence.
+		`CREATE TABLE IF NOT EXISTS architecture_projects (
+			id TEXT PRIMARY KEY, library_id TEXT NOT NULL REFERENCES libraries(id) ON DELETE CASCADE,
+			name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', root_path TEXT NOT NULL,
+			exclude_patterns_json TEXT NOT NULL DEFAULT '[]',
+			scan_period_seconds INTEGER NOT NULL DEFAULT 0, schedule_kind TEXT NOT NULL DEFAULT 'manual',
+			schedule_anchor TEXT NOT NULL DEFAULT '', schedule_next_at TEXT NOT NULL DEFAULT '',
+			allow_remote_code INTEGER NOT NULL DEFAULT 0,
+			execution_json TEXT NOT NULL DEFAULT '{}', last_snapshot_id TEXT NOT NULL DEFAULT '',
+			last_snapshot_hash TEXT NOT NULL DEFAULT '', last_scan_changed INTEGER,
+			analysis_status TEXT NOT NULL DEFAULT '', analysis_error TEXT NOT NULL DEFAULT '',
+			current_analysis_snapshot_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL, deleted_at TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_architecture_projects_library ON architecture_projects(library_id, updated_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS architecture_project_directories (
+			id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES architecture_projects(id) ON DELETE CASCADE,
+			path TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', recursive INTEGER NOT NULL DEFAULT 1,
+			created_at TEXT NOT NULL, UNIQUE(project_id, path)
+		)`,
+		`CREATE TABLE IF NOT EXISTS architecture_snapshots (
+			id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES architecture_projects(id) ON DELETE CASCADE,
+			generation INTEGER NOT NULL, status TEXT NOT NULL, content_hash TEXT NOT NULL,
+			git_revision TEXT NOT NULL DEFAULT '', git_dirty INTEGER NOT NULL DEFAULT 0,
+			git_changed_paths_json TEXT NOT NULL DEFAULT '[]', file_count INTEGER NOT NULL DEFAULT 0,
+			module_count INTEGER NOT NULL DEFAULT 0, unknown_count INTEGER NOT NULL DEFAULT 0,
+			coverage_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+			UNIQUE(project_id, generation), UNIQUE(project_id, content_hash)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_architecture_snapshots_project ON architecture_snapshots(project_id, generation DESC)`,
+		`CREATE TABLE IF NOT EXISTS architecture_snapshot_files (
+			snapshot_id TEXT NOT NULL REFERENCES architecture_snapshots(id) ON DELETE CASCADE,
+			path TEXT NOT NULL, language TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+			line_start INTEGER NOT NULL DEFAULT 1, line_end INTEGER NOT NULL DEFAULT 0,
+			line_count INTEGER NOT NULL DEFAULT 0, content_hash TEXT NOT NULL,
+			git_status TEXT NOT NULL DEFAULT '', entry_point INTEGER NOT NULL DEFAULT 0,
+			dependency_files_json TEXT NOT NULL DEFAULT '[]', container_files_json TEXT NOT NULL DEFAULT '[]',
+			detection TEXT NOT NULL DEFAULT '', PRIMARY KEY(snapshot_id, path)
+		)`,
+		`CREATE TABLE IF NOT EXISTS architecture_snapshot_modules (
+			snapshot_id TEXT NOT NULL REFERENCES architecture_snapshots(id) ON DELETE CASCADE,
+			name TEXT NOT NULL, language TEXT NOT NULL, root_path TEXT NOT NULL,
+			version TEXT NOT NULL DEFAULT '', dependencies_json TEXT NOT NULL DEFAULT '[]', dependency_versions_json TEXT NOT NULL DEFAULT '{}', entry_points_json TEXT NOT NULL DEFAULT '[]',
+			dependency_files_json TEXT NOT NULL DEFAULT '[]', container_files_json TEXT NOT NULL DEFAULT '[]',
+			unknown INTEGER NOT NULL DEFAULT 0, evidence_paths_json TEXT NOT NULL DEFAULT '[]',
+			PRIMARY KEY(snapshot_id, name, language)
+		)`,
+		`CREATE TABLE IF NOT EXISTS architecture_analyses (
+			snapshot_id TEXT PRIMARY KEY REFERENCES architecture_snapshots(id) ON DELETE CASCADE,
+			payload_json TEXT NOT NULL, created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS architecture_tasks (
+			id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES architecture_projects(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL, status TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 0,
+			input_json TEXT NOT NULL DEFAULT '{}',
+			snapshot_id TEXT NOT NULL DEFAULT '', lease_owner TEXT NOT NULL DEFAULT '',
+			lease_token TEXT NOT NULL DEFAULT '', lease_expires_at TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
+			error_code TEXT NOT NULL DEFAULT '', message TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS architecture_artifacts (
+			id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES architecture_projects(id) ON DELETE CASCADE,
+			snapshot_id TEXT NOT NULL REFERENCES architecture_snapshots(id) ON DELETE CASCADE,
+			kind TEXT NOT NULL, file_name TEXT NOT NULL, content_type TEXT NOT NULL,
+			renderer TEXT NOT NULL DEFAULT '', renderer_error TEXT NOT NULL DEFAULT '',
+			relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL, UNIQUE(snapshot_id, kind)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_architecture_artifacts_snapshot ON architecture_artifacts(snapshot_id, kind)`,
+		`CREATE TABLE IF NOT EXISTS architecture_agents (
+			id TEXT PRIMARY KEY, name TEXT NOT NULL, capabilities_json TEXT NOT NULL DEFAULT '[]',
+			project_ids_json TEXT NOT NULL DEFAULT '[]', status TEXT NOT NULL DEFAULT 'online',
+			token_hash TEXT NOT NULL DEFAULT '', last_heartbeat TEXT NOT NULL, created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_architecture_agents_heartbeat ON architecture_agents(status, last_heartbeat)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_architecture_tasks_one_active
+			ON architecture_tasks(project_id,kind) WHERE status IN ('queued','running','cancellation_requested')`,
+		`CREATE INDEX IF NOT EXISTS idx_architecture_tasks_recovery ON architecture_tasks(status, lease_expires_at)`,
 		`CREATE TABLE IF NOT EXISTS feedback (
 			id TEXT PRIMARY KEY, request_id TEXT NOT NULL, chunk_id TEXT NOT NULL, relevant INTEGER NOT NULL,
 			note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
@@ -290,6 +376,7 @@ func (s *Store) migrate() error {
 			archived_at TEXT NOT NULL, reason TEXT NOT NULL
 		)`,
 		`UPDATE jobs SET status='queued', message='Recovered after restart' WHERE status='running'`,
+		`UPDATE architecture_tasks SET status=CASE WHEN cancel_requested=1 THEN 'cancelled' ELSE 'queued' END, lease_owner='', lease_token='', lease_expires_at=NULL, message=CASE WHEN cancel_requested=1 THEN 'Cancelled during restart recovery' ELSE 'Recovered after restart' END WHERE status='running'`,
 	}
 	for _, statement := range statements {
 		if _, err := s.DB.Exec(statement); err != nil {
@@ -346,6 +433,21 @@ func (s *Store) migrate() error {
 		{"saved_searches", "view", "TEXT NOT NULL DEFAULT 'sources'"},
 		{"saved_searches", "filters_json", "TEXT NOT NULL DEFAULT '{}'"},
 		{"saved_searches", "sort_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"architecture_projects", "allow_remote_code", "INTEGER NOT NULL DEFAULT 0"},
+		{"architecture_projects", "schedule_kind", "TEXT NOT NULL DEFAULT 'manual'"},
+		{"architecture_projects", "schedule_anchor", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_projects", "schedule_next_at", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_projects", "last_scan_changed", "INTEGER"},
+		{"architecture_projects", "analysis_status", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_projects", "analysis_error", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_projects", "current_analysis_snapshot_id", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_snapshot_modules", "dependencies_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"architecture_snapshot_modules", "dependency_versions_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"architecture_agents", "token_hash", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_artifacts", "renderer", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_artifacts", "renderer_error", "TEXT NOT NULL DEFAULT ''"},
+		{"architecture_tasks", "input_json", "TEXT NOT NULL DEFAULT '{}'"},
+		{"agent_tokens", "project_ids_json", "TEXT NOT NULL DEFAULT '[]'"},
 	} {
 		var existing string
 		err := s.DB.QueryRow(`SELECT name FROM pragma_table_info('`+migration.table+`') WHERE name=?`, migration.name).Scan(&existing)
@@ -356,6 +458,15 @@ func (s *Store) migrate() error {
 		} else if err != nil {
 			return fmt.Errorf("migration failed checking %s.%s: %w", migration.table, migration.name, err)
 		}
+	}
+	// The first architecture schema serialized every task kind into one
+	// project-wide active slot. MCP orchestration uses a durable hand-off task
+	// beside the API analysis task, so migrate the unique key to project+kind.
+	if _, err := s.DB.Exec(`DROP INDEX IF EXISTS idx_architecture_tasks_one_active`); err != nil {
+		return fmt.Errorf("migration failed replacing architecture task index: %w", err)
+	}
+	if _, err := s.DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_architecture_tasks_one_active ON architecture_tasks(project_id,kind) WHERE status IN ('queued','running','cancellation_requested')`); err != nil {
+		return fmt.Errorf("migration failed creating architecture task index: %w", err)
 	}
 	// Preserve the legacy boolean behavior for databases created before the
 	// explicit conversion mode existed. New writes keep both fields aligned.
@@ -1833,21 +1944,23 @@ func (s *Store) EvidenceByChunkIDs(ctx context.Context, ids []string) (map[strin
 	return items, rows.Err()
 }
 
-func (s *Store) CreateToken(ctx context.Context, name, hash string, scopes, libraries []string) (model.AgentToken, error) {
+func (s *Store) CreateToken(ctx context.Context, name, hash string, scopes, libraries, projects []string) (model.AgentToken, error) {
 	t, stamp := now()
 	scopesJSON, _ := json.Marshal(scopes)
 	librariesJSON, _ := json.Marshal(libraries)
-	item := model.AgentToken{ID: uuid.NewString(), Name: name, Scopes: scopes, LibraryIDs: libraries, CreatedAt: t}
-	_, err := s.DB.ExecContext(ctx, `INSERT INTO agent_tokens(id,name,token_hash,scopes_json,library_ids_json,created_at) VALUES(?,?,?,?,?,?)`, item.ID, name, hash, string(scopesJSON), string(librariesJSON), stamp)
+	projectsJSON, _ := json.Marshal(projects)
+	item := model.AgentToken{ID: uuid.NewString(), Name: name, Scopes: scopes, LibraryIDs: libraries, ProjectIDs: projects, CreatedAt: t}
+	_, err := s.DB.ExecContext(ctx, `INSERT INTO agent_tokens(id,name,token_hash,scopes_json,library_ids_json,project_ids_json,created_at) VALUES(?,?,?,?,?,?,?)`, item.ID, name, hash, string(scopesJSON), string(librariesJSON), string(projectsJSON), stamp)
 	return item, err
 }
 
 func (s *Store) FindToken(ctx context.Context, hash string) (model.AgentToken, error) {
 	var item model.AgentToken
-	var scopes, libraries, created string
-	err := s.DB.QueryRowContext(ctx, `SELECT id,name,scopes_json,library_ids_json,created_at FROM agent_tokens WHERE token_hash=? AND revoked_at IS NULL`, hash).Scan(&item.ID, &item.Name, &scopes, &libraries, &created)
+	var scopes, libraries, projects, created string
+	err := s.DB.QueryRowContext(ctx, `SELECT id,name,scopes_json,library_ids_json,project_ids_json,created_at FROM agent_tokens WHERE token_hash=? AND revoked_at IS NULL`, hash).Scan(&item.ID, &item.Name, &scopes, &libraries, &projects, &created)
 	_ = json.Unmarshal([]byte(scopes), &item.Scopes)
 	_ = json.Unmarshal([]byte(libraries), &item.LibraryIDs)
+	_ = json.Unmarshal([]byte(projects), &item.ProjectIDs)
 	item.CreatedAt = parseTime(created)
 	return item, err
 }
@@ -1861,13 +1974,14 @@ func (s *Store) ListTokens(ctx context.Context) ([]model.AgentToken, error) {
 	items := []model.AgentToken{}
 	for rows.Next() {
 		var item model.AgentToken
-		var scopes, libraries, created string
+		var scopes, libraries, projects, created string
 		var revoked sql.NullString
-		if err := rows.Scan(&item.ID, &item.Name, &scopes, &libraries, &created, &revoked); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &scopes, &libraries, &projects, &created, &revoked); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(scopes), &item.Scopes)
 		_ = json.Unmarshal([]byte(libraries), &item.LibraryIDs)
+		_ = json.Unmarshal([]byte(projects), &item.ProjectIDs)
 		item.CreatedAt = parseTime(created)
 		if revoked.Valid {
 			v := parseTime(revoked.String)

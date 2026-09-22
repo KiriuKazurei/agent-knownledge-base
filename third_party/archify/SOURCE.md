@@ -1,0 +1,78 @@
+# archify source record
+
+This directory contains the fixed upstream renderer copied from the Archify
+repository at commit `72c750bb070d95171dbb2244e5b62b1b7da69c12`. Runtime
+update checks are disabled with `ARCHIFY_UPDATE_CHECK_DISABLED=1`; no network
+request is needed to validate, render, deliver, or read the included Skill.
+
+- Repository: https://github.com/tt-a1i/archify
+- Commit: `72c750bb070d95171dbb2244e5b62b1b7da69c12`
+- Download archive SHA-256: `43EE17DDB4E1CA44A618F7B9D04DDB11666126A5CF4DCA5B1FBEDBB4602BEF8B`
+- Adapter: `kah-archify-adapter-v1`
+- Runtime entrypoint: `third_party/archify/upstream/bin/archify.mjs`
+- Upstream license: `third_party/archify/upstream/LICENSE` (MIT)
+- Upstream notices: `third_party/archify/upstream/THIRD_PARTY_NOTICES.md`
+- Included files: 48 source/resource files; every file is listed below with
+  its SHA-256 and byte count. The manifest is generated from the checked-in
+  tree and can be reproduced with PowerShell `Get-FileHash`.
+
+## Reproducible manifest
+
+```text
+assets/JetBrainsMono-OFL.txt c1ab7c666206842a02b35b30770dac0d7a10156ed401c9defc3f02a754d89e90 4398
+assets/template.html 505f1c6baa9c2454475c048aa75df8abd867e680e7b3b794b9218a95a56fc370 774866
+bin/archify.mjs 7236f5ad129cf095bf78e0e612c5f0b2fb99dcefdf6cb752f36a4ed7aa580833 78627
+bin/open-artifact.mjs add1722186683c12770c575585bbb8774919c15b87361e10d2fe834623223159 2225
+bin/preview.mjs 6d41e491d42070c05b5e278548714da1fcef6e6adfd84a0391ab2bf12f47373c 23722
+bin/visual-check.mjs 8fa8c6f233f3598f4f22e58c48a4de6f45b3b072ad8e7aee4731c49b4bfbdc52 33390
+LICENSE b799ab081703e7821ae5096d2c1abdf14bbdc75e8ea1c4045998c36ed6db9706 1102
+package-lock.json a900ea1ce2f33fca2b88ab1c8cb2cc30031ba285c05101a9b7b25768e6591c6f 4906
+package.json 2421a480f6bee01b684f14b96a5192d240d70d89ec6443c0279e6de77bc10a06 1632
+renderers/architecture/grid.mjs f6de99c32436feed3378b0ddef516bb4732ff27a89c543b50635d4d14a15a55a 2071
+renderers/architecture/render-architecture.mjs f57077cb9fa64a8412ab0af705cb31e2e7a920114b31852882c04a76840365dc 45546
+renderers/dataflow/README.md 18c4f86ba62fcee371d9fe38094625b3a68cc76231c36ab8c8124acb4c1ffa42 4202
+renderers/dataflow/render-dataflow.mjs 5a5da505e5c68041990de92847f53a38215efb9212bc36fc911774e8829335c9 21194
+renderers/lifecycle/README.md f8ef88dc859189bb18bad7bb2e27d997cbc9d30936cf20f8bf401bae7f57deec 5197
+renderers/lifecycle/render-lifecycle.mjs 23720729a14495b4085839653ec0622f2465be3b1e8c9eb556b602ab3f4a8cda 24285
+renderers/sequence/README.md a442335dcf44b1587d3ad88809e31b001a4fafdf7a134040e8b1927455af4206 4828
+renderers/sequence/render-sequence.mjs 230c0fb79775badb4beb6fd74f45ed1ffbb70e932c3641a24bedcc61f912bddf 21734
+renderers/shared/brand-marks.mjs 4557b7f3eec25a3dba66a0f5da1c5dca6ec607e2a68e9be51cd697cefe9e6425 22582
+renderers/shared/cli.mjs 92ea6537c3138a2c11f302b9f1546af7539ca42d6b400bebc29cadbb5184f664 10238
+renderers/shared/desktop-readability.mjs b36203a11df348706e541f309266a0f9b914dac6a7eb8ba804e3abe8f8d6c710 1089
+renderers/shared/diagnostics.mjs 032bbcb4892c67fcda0f9c69f55fbcdd6b11dd291386a0cf118b1ba73ecda36f 6154
+renderers/shared/engineering-profiles.mjs 7e99f9d5423f66cc9ab6224da56dc2d5aa6c6faec29178034794e9db6b5b2889 6936
+renderers/shared/generated-brand-marks.mjs 0f157d229c12df6f53763a3b88684baa5803a52484c49c4d34ec40b8743beea2 163612
+renderers/shared/generated-validators.mjs a1843e5612916e7ff71511d8577cdbea9a1355eee0ed1379de0ffd668992387f 431711
+renderers/shared/geometry.mjs 161785af32241fc96df051c9be4f2bb9c3b897418d708f4a051b63f1c44952cf 57175
+renderers/shared/i18n.mjs 0d9e839c3e5346160b0028d07fcf78c86671189e0714ea069dc99913e859fcdb 48475
+renderers/shared/layout-report.mjs 44c2f74a20e483dd37dae6791ede39284ce3bac1a2a13872d2912999e8504df5 1015
+renderers/shared/legend.mjs 4c8b37f10fb5c783a28bff6aa35bc3966155213ee32f64a8252eab5b9e64a747 8652
+renderers/shared/output-path.mjs 44a5f63239703a0a56623711bb9565272488c540650cb8c3f0a3aac57928d1cf 11645
+renderers/shared/repository-evidence.mjs e8676fb59df158bdca00e76efdf897285f8d96d23b41a426c9bc575786f0932f 12542
+renderers/shared/repository-location.mjs e82fa68ab46e71566eb7aefdb48f6df67b34fd27ce36489e7787410dbfba05ce 3453
+renderers/shared/text-fit.mjs 35b6ef2c64d88c1ea4e5aab2af7c4e8a2c2e1be62db71263787d39a9797e7dea 2191
+renderers/shared/utils.mjs 20124265300eb286db184a053561005cc32b6128dc1bc1b3f9520ffa8d43a241 11603
+renderers/shared/validator.mjs 7460d7fcbcdf710649256c5e96142ae26d807a655d3296ee8caf7f5e158622cc 3508
+renderers/workflow/README.md 7e1bd65cc5cc38206304ae2f61f4f0f493da98d71a111a61d0754c9da362c5c9 10386
+renderers/workflow/render-workflow.mjs 83be05d1efd1816c527fccdf3ebbd4a0f1454c6cb0c9f7554c6702eb40d9c540 1153
+renderers/workflow/workflow-compiler.mjs aa2a42d3d5c79642a4aaa0faef95fec9ce01727ad1d97e92ff8e59cba4926204 171400
+renderers/workflow/workflow-migration-geometry.mjs ebfc5085dd008ae63802f500402fb7bf8ca0ae28460997d867f45e5493b8fbe6 5299
+schemas/architecture.schema.json 94568c7ca72c07ac0ee02ee76bd39392874b3a13bb796a127962be68d0f5bc90 6753
+schemas/common.schema.json 2630c958314eeebb92e0f6f6330475f1a2bc48f8c1b53201ba3b58889b319c80 3096
+schemas/dataflow.schema.json 09d238a6a18f2e074ec69c8f905f58a44d3a0b68fc6a925b8346c484a912af90 5907
+schemas/lifecycle.schema.json 05b46c0db95ee7ed44305b61496a96bb4f69342b20f9903d6534d952ebc65083 6597
+schemas/README.md f4ca94ec18cf60ad02211f2c5bb64e9c26a87467a22215e06db34dbfc5d6145f 11462
+schemas/sequence.schema.json c9fec3fad087f14d55c0bb2d34446246e3405f0238c292c1cb6bef28d1120fcb 5642
+schemas/workflow.schema.json 2128e82afd2b971fcb7d80ada86fa836bb4a5035b504053b87d3aeefec380e3c 9752
+scripts/check-render-output.mjs 173b013e86195607fbc41a1aafc8731d145f3d2bf3e8d4c4f977fd6d17b7c4f4 36425
+SKILL.md 10094272d6d1b4ad0f2c2e0880cb646fe4991454a2dc3d854aecb27e7407ee1f 16396
+THIRD_PARTY_NOTICES.md 0b7fb59365dc21c93b0f62526d74ee913aeec9ae532c112bc76afa7edcd56e14 5248
+```
+
+KAH converts its validated IR to the upstream `architecture` typed input and
+invokes the vendored `validate`, `render`, and `deliver` commands. The
+rendered HTML/SVG are always upstream artifacts. PNG uses Archify's
+`visual-check` screenshots when a local Chrome/Chromium is available; when it
+is not, the API returns a PNG marked `kah-offline-svg-fallback` together with
+the browser health error in the artifact response. It is never labelled as
+an Archify PNG. The application copies no output back into the source project.

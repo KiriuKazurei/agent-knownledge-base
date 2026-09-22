@@ -321,6 +321,36 @@ func (s *Store) ValidateLibraryIDs(ctx context.Context, ids []string) error {
 	return nil
 }
 
+// ValidateProjectIDs checks that every project is active and belongs to one
+// of the token's active library grants.  Project grants are never inferred
+// from a library grant; callers must pass the explicit project list.
+func (s *Store) ValidateProjectIDs(ctx context.Context, projectIDs, libraryIDs []string) error {
+	projects := uniqueStrings(projectIDs)
+	if len(projects) == 0 {
+		return nil
+	}
+	libraries := uniqueStrings(libraryIDs)
+	if len(libraries) == 0 {
+		return sql.ErrNoRows
+	}
+	args := make([]any, 0, len(projects)+len(libraries))
+	for _, id := range projects {
+		args = append(args, id)
+	}
+	for _, id := range libraries {
+		args = append(args, id)
+	}
+	query := `SELECT COUNT(*) FROM architecture_projects p JOIN libraries l ON l.id=p.library_id WHERE p.deleted_at IS NULL AND l.deleted_at IS NULL AND p.id IN (` + strings.TrimRight(strings.Repeat("?,", len(projects)), ",") + `) AND p.library_id IN (` + strings.TrimRight(strings.Repeat("?,", len(libraries)), ",") + `)`
+	var found int
+	if err := s.DB.QueryRowContext(ctx, query, args...).Scan(&found); err != nil {
+		return err
+	}
+	if found != len(projects) {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
 func (s *Store) SkillAccessibleToLibraries(ctx context.Context, skillID string, libraryIDs []string) (bool, error) {
 	if len(libraryIDs) == 0 {
 		return true, nil

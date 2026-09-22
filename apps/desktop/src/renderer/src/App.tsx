@@ -8,17 +8,20 @@ import { markdown } from '@codemirror/lang-markdown'
 import ReactMarkdown from 'react-markdown'
 import {
   Activity, Archive, BookOpen, Bot, CheckCircle2, ChevronRight, CircleAlert, Clock3, Command, Database,
-  File, FileCode2, FilePlus2, FolderArchive, FolderSearch2, Import, KeyRound, Library, Link2, ListFilter,
-  LoaderCircle, Menu, Monitor, Moon, Network, Palette, PanelRight, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
+  File, FileCode2, FilePlus2, FolderArchive, FolderSearch2, Import, KeyRound, Layers3, Library, Link2, ListFilter,
+  LoaderCircle, Menu, Monitor, Moon, Network, Palette, PanelLeftClose, PanelLeftOpen, PanelRight, Plus, RefreshCw, Save, Search, Settings, ShieldCheck,
   Pencil, Sparkles, Star, Sun, Tag, Trash2, X
 } from 'lucide-react'
 import { client, getRuntime } from './api'
 import { SkillMappingDetailPane, SkillMappingsWorkspace } from './SkillMappings'
 import { RelationshipGraphInspector, RelationshipGraphWorkspace, type GraphSelection } from './RelationshipGraph'
+import { ArchitectureWorkspace } from './ArchitectureWorkspace'
+import { RetrievalModelSettings } from './RetrievalModelSettings'
+import { RetrievalSearchPanel } from './RetrievalSearchPanel'
 import { ActivityCenter, CommandPalette, ConfirmDialog, ContextActions, MoreActions, UndoToast, type ConfirmRequest, type WorkbenchAction } from './WorkbenchControls'
 import { canonicalDocumentPath, isExternalMarkdownLink, resolveMarkdownDocumentPath } from './markdownLinks'
 import { useUI } from './store'
-import type { AgentToken, Document, DocumentBatchRequest, Job, KAHSubmission, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, SavedSearch, Skill, SourceWatch, TrashEntry, VirtualFolder } from './types'
+import type { AgentToken, ArchitectureProject, Document, DocumentBatchRequest, Job, KAHSubmission, KnowledgeDirectoryEntry, KnowledgeRevision, Library as LibraryType, Provider, RetrievalSearchResponse, SavedSearch, Skill, SourceWatch, TrashEntry, VirtualFolder } from './types'
 
 function IconButton({ label, children, onClick, active = false, pressed, controls, disabled = false, busy = false }: { label: string; children: React.ReactNode; onClick: () => void; active?: boolean; pressed?: boolean; controls?: string; disabled?: boolean; busy?: boolean }) {
   return <button type="button" className={`icon-button ${active ? 'active' : ''}`} aria-label={label} aria-pressed={pressed} aria-controls={controls} aria-busy={busy || undefined} title={label} onClick={onClick} disabled={disabled || busy}>{children}</button>
@@ -38,13 +41,15 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
   return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>
 }
 
-function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, skillsView, trashItemCount, commandOpen, activityOpen, onOpenCommands, onOpenActivity }: { activeSection: 'knowledge'|'graph'|'skills'|'review'|'trash'; activeJobs: Job[]; backendError: string; searchInfo: string; skillsView: 'skills'|'mappings'; trashItemCount: number; commandOpen: boolean; activityOpen: boolean; onOpenCommands: () => void; onOpenActivity: () => void }) {
-  const sectionLabel = ({ knowledge: '知识管理', graph: '关系图谱', skills: 'Skills', review: '待审核', trash: '回收站' } as const)[activeSection]
+function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, skillsView, trashItemCount, commandOpen, activityOpen, onOpenCommands, onOpenActivity }: { activeSection: 'knowledge'|'graph'|'architecture'|'skills'|'review'|'trash'; activeJobs: Job[]; backendError: string; searchInfo: string; skillsView: 'skills'|'mappings'; trashItemCount: number; commandOpen: boolean; activityOpen: boolean; onOpenCommands: () => void; onOpenActivity: () => void }) {
+  const sectionLabel = ({ knowledge: '知识管理', graph: '关系图谱', architecture: '项目架构', skills: 'Skills', review: '待审核', trash: '回收站' } as const)[activeSection]
   const activityCount = activeJobs.length
   const sectionStatus = activeSection === 'knowledge'
     ? (activityCount ? `${activityCount} 个任务正在处理` : '索引队列空闲')
     : activeSection === 'graph'
       ? '百分比布局已与内容版本分离'
+    : activeSection === 'architecture'
+      ? (activityCount ? `${activityCount} 个任务正在处理` : '代码证据与架构版本可追溯')
     : activeSection === 'review'
       ? '审核通过前不会写入正式索引'
       : activeSection === 'skills'
@@ -54,6 +59,8 @@ function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, 
     ? (searchInfo || '证据优先 · 本地优先')
     : activeSection === 'graph'
       ? '稳定知识 · 可审计关系'
+    : activeSection === 'architecture'
+      ? '生成内容通过审核后进入正式知识'
     : activeSection === 'review'
       ? '审核记录可追溯'
       : activeSection === 'skills'
@@ -83,6 +90,7 @@ function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, 
 }
 
 const DETAIL_PANE_WIDTH_STORAGE_KEY = 'kah.detail-pane-width'
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'kah.sidebar-collapsed'
 const DETAIL_PANE_DEFAULT_WIDTH = 420
 const DETAIL_PANE_MIN_WIDTH = 330
 const DETAIL_PANE_MAX_WIDTH = 720
@@ -111,6 +119,15 @@ function readDetailPaneWidth() {
     return Number.isFinite(stored) ? clampDetailPaneWidthForViewport(stored) : clampDetailPaneWidthForViewport(DETAIL_PANE_DEFAULT_WIDTH)
   } catch {
     return clampDetailPaneWidthForViewport(DETAIL_PANE_DEFAULT_WIDTH)
+  }
+}
+
+function readSidebarCollapsed() {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true'
+  } catch {
+    return false
   }
 }
 
@@ -172,6 +189,8 @@ export function App() {
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([])
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<KnowledgeDirectoryEntry[] | null>(null)
+  const [retrievalResponse, setRetrievalResponse] = useState<RetrievalSearchResponse | null>(null)
+  const [retrievalFilters, setRetrievalFilters] = useState<{ sourceType: 'all'|'knowledge'|'raw'|'architecture'; libraryIds?: string[]; projectIds?: string[] }>({ sourceType: 'all' })
   const [searchInfo, setSearchInfo] = useState('')
   const [knowledgeView, setKnowledgeView] = useState<'sources'|'knowledge'>('sources')
   const [selectedKnowledge, setSelectedKnowledge] = useState('')
@@ -191,7 +210,7 @@ export function App() {
   const [urlValue, setUrlValue] = useState('')
   const [urlOpen, setUrlOpen] = useState(false)
   const [backendError, setBackendError] = useState('')
-  const [activeSection, setActiveSection] = useState<'knowledge'|'graph'|'skills'|'review'|'trash'>('knowledge')
+  const [activeSection, setActiveSection] = useState<'knowledge'|'graph'|'architecture'|'skills'|'review'|'trash'>('knowledge')
   const [graphSelection, setGraphSelection] = useState<GraphSelection>()
   const [selectedSkill, setSelectedSkill] = useState('')
   const [skillsView, setSkillsView] = useState<'skills'|'mappings'>('skills')
@@ -202,6 +221,7 @@ export function App() {
   const [detailPaneWidth, setDetailPaneWidth] = useState(readDetailPaneWidth)
   const [detailPaneResizing, setDetailPaneResizing] = useState(false)
   const [detailPaneOpen, setDetailPaneOpen] = useState(true)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(readSidebarCollapsed)
   const [folderError, setFolderError] = useState('')
   const searchInput = useRef<HTMLInputElement>(null)
   const detailPaneRef = useRef<HTMLElement>(null)
@@ -233,6 +253,7 @@ export function App() {
   const detail = useQuery({ queryKey: ['document', selectedDocument], queryFn: () => client.document(selectedDocument), enabled: Boolean(selectedDocument) })
   const knowledgeDetail = useQuery({ queryKey: ['knowledge', selectedKnowledge], queryFn: () => client.knowledge(selectedKnowledge), enabled: Boolean(selectedKnowledge) })
   const knowledgeDirectory = useQuery({ queryKey: ['knowledge-directory', selectedLibrary], queryFn: () => client.knowledgeSearch('', selectedLibrary ? [selectedLibrary] : []), enabled: knowledgeView === 'knowledge', refetchInterval: 5000 })
+  const retrievalProjects = useQuery({ queryKey: ['retrieval-projects'], queryFn: () => client.architectureProjects(), enabled: Boolean(retrievalResponse), staleTime: 30_000, retry: false })
   const trash = useQuery({ queryKey: ['trash'], queryFn: () => client.trash?.() ?? Promise.resolve([]), enabled: activeSection === 'trash' })
 
   useEffect(() => { if (!selectedLibrary && libraries.data?.[0]) setSelectedLibrary(libraries.data[0].id) }, [libraries.data, selectedLibrary])
@@ -254,6 +275,9 @@ export function App() {
   useEffect(() => {
     try { window.localStorage.setItem(DETAIL_PANE_WIDTH_STORAGE_KEY, String(detailPaneWidth)) } catch { /* local storage is optional */ }
   }, [detailPaneWidth])
+  useEffect(() => {
+    try { window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(sidebarCollapsed)) } catch { /* local storage is optional */ }
+  }, [sidebarCollapsed])
   useEffect(() => {
     if (!detailPaneResizing) return
     const handlePointerMove = (event: PointerEvent) => {
@@ -291,6 +315,13 @@ export function App() {
   const search = useMutation({
     mutationFn: ({ text, libraryId }: { text: string; libraryId: string }) => client.knowledgeSearch(text, libraryId ? [libraryId] : []),
     onSuccess: (response) => { setSearchResults(response.results); setSearchInfo(`${response.results.length} 个知识体`) }
+  })
+  const retrievalSearch = useMutation({
+    mutationFn: ({ text, filters }: { text: string; filters: typeof retrievalFilters }) => {
+      if (typeof client.retrievalSearch !== 'function') throw new Error('当前桌面后端没有提供统一检索接口')
+      return client.retrievalSearch({ query: text, filters, topK: 20, retrievalMode: 'hybrid' })
+    },
+    onSuccess: (response) => { setRetrievalResponse(response); setSearchResults(null); setSearchInfo(`${response.results.length} 个检索结果${response.keywordOnly || response.degraded ? ' · 关键词降级' : ''}`) }
   })
   const saveSearch = useMutation({ mutationFn: (name: string) => client.createSavedSearch(name, query, selectedLibrary ? [selectedLibrary] : [], filterTags, knowledgeView, { tags: filterTags, favorite: favoritesOnly, tagMode: 'all' }, { field: 'updatedAt', direction: 'desc' }), onSuccess: () => { setSaveSearchDialogOpen(false); void queryClient.invalidateQueries({ queryKey: ['saved-searches'] }) } })
   const batchDocuments = useMutation({ mutationFn: client.batchDocuments, onSuccess: () => { setSelectedDocumentIds([]); selectionAnchor.current = null; void queryClient.invalidateQueries({ queryKey: ['documents'] }); void queryClient.invalidateQueries({ queryKey: ['documents-all'] }); void queryClient.invalidateQueries({ queryKey: ['jobs'] }); void queryClient.invalidateQueries({ queryKey: ['trash'] }) } })
@@ -345,16 +376,22 @@ export function App() {
     setQuery(value)
     setSelectedKnowledge('')
     setLibraryDetailsOpen(false)
-    if (!normalized) { setSearchResults(null); setSearchInfo(''); return }
+    if (!normalized) { setSearchResults(null); setRetrievalResponse(null); setSearchInfo(''); return }
     setKnowledgeView('knowledge')
     setSelectedDocument('')
-    setTimeout(() => search.mutate({ text: normalized, libraryId }), 0)
+    const filters = { ...retrievalFilters, libraryIds: libraryId ? [libraryId] : undefined }
+    setRetrievalFilters(filters)
+    setTimeout(() => {
+      if (typeof client.retrievalSearch === 'function') retrievalSearch.mutate({ text: normalized, filters })
+      else search.mutate({ text: normalized, libraryId })
+    }, 0)
   }
 
   function switchKnowledgeView(view: 'sources'|'knowledge') {
     if (view !== knowledgeView && !confirmUnsavedDraftLeave()) return
     setKnowledgeView(view)
     setSearchResults(null)
+    setRetrievalResponse(null)
     setSearchInfo('')
     setLibraryDetailsOpen(false)
     if (view === 'sources') setSelectedKnowledge('')
@@ -427,29 +464,36 @@ export function App() {
     }
   }
 
-  return <div className={`app-shell ${detailPaneOpen ? '' : 'detail-pane-collapsed'}`} style={{ '--detail-pane-width': `${detailPaneWidth}px` } as React.CSSProperties}>
+  return <div className={`app-shell ${detailPaneOpen ? '' : 'detail-pane-collapsed'} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} style={{ '--detail-pane-width': `${detailPaneWidth}px` } as React.CSSProperties}>
     <div className="window-titlebar" aria-hidden="true"><div className="window-titlebar-brand"><span className="window-titlebar-mark"><Sparkles size={14}/></span><span>Knowledge Agent Hub</span></div></div>
-    <aside className="sidebar" aria-label="知识库导航">
-      <div className="brand"><div className="brand-mark"><Sparkles size={19} /></div><div><strong>Knowledge</strong><span>Agent Hub</span></div></div>
-      <nav className="sidebar-scroll" aria-label="知识库导航">
+    <aside className="sidebar" aria-label="知识库导航" data-collapsed={sidebarCollapsed || undefined}>
+      <div className="sidebar-header">
+        <button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} aria-expanded={!sidebarCollapsed} aria-controls="primary-sidebar-navigation" title={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} onClick={() => setSidebarCollapsed((value) => !value)}>
+          {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden="true"/> : <PanelLeftClose size={18} aria-hidden="true"/>}
+        </button>
+      </div>
+      <nav id="primary-sidebar-navigation" className="sidebar-scroll" aria-label="知识库导航">
         <div className="nav-heading"><span>工作区</span></div>
-        <button type="button" className={`library-row ${activeSection === 'knowledge' ? 'active' : ''}`} onClick={() => { if (confirmUnsavedDraftLeave()) setActiveSection('knowledge') }}>
+        <button type="button" className={`library-row ${activeSection === 'knowledge' ? 'active' : ''}`} aria-label="知识管理文档、网页与检索" title="知识管理" aria-current={activeSection === 'knowledge' ? 'page' : undefined} onClick={() => { if (confirmUnsavedDraftLeave()) setActiveSection('knowledge') }}>
           <span className="library-icon"><Library size={17}/></span><span className="library-copy"><strong>知识管理</strong><small>文档、网页与检索</small></span><ChevronRight size={15}/>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'graph' ? 'active' : ''}`} aria-current={activeSection === 'graph' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('graph'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(true) }}>
+        <button type="button" className={`library-row ${activeSection === 'graph' ? 'active' : ''}`} aria-label="关系图谱稳定知识与证据关系" title="关系图谱" aria-current={activeSection === 'graph' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('graph'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(true) }}>
           <span className="library-icon"><Network size={17}/></span><span className="library-copy"><strong>关系图谱</strong><small>稳定知识与证据关系</small></span><ChevronRight size={15}/>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'skills' ? 'active' : ''}`} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('skills'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false) }}>
+        <button type="button" className={`library-row ${activeSection === 'architecture' ? 'active' : ''}`} aria-label="项目架构代码理解、技术栈与架构图" title="项目架构" aria-current={activeSection === 'architecture' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('architecture'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}>
+          <span className="library-icon"><Layers3 size={17}/></span><span className="library-copy"><strong>项目架构</strong><small>代码理解、技术栈与架构图</small></span><ChevronRight size={15}/>
+        </button>
+        <button type="button" className={`library-row ${activeSection === 'skills' ? 'active' : ''}`} aria-label="SkillsAgent 能力包" title="Skills" aria-current={activeSection === 'skills' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('skills'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false) }}>
           <span className="library-icon"><FolderArchive size={17}/></span><span className="library-copy"><strong>Skills</strong><small>Agent 能力包</small></span><ChevronRight size={15}/>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'review' ? 'active' : ''}`} aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('review'); setSelectedDocument(''); setSelectedKnowledge(''); setSelectedSubmission(''); setLibraryDetailsOpen(false) }}><span className="library-icon"><Clock3 size={17}/></span><span className="library-copy"><strong>待审核</strong><small>Agent 提交的知识</small></span><ChevronRight size={15}/></button>
-        <button type="button" className={`library-row ${activeSection === 'trash' ? 'active' : ''}`} aria-current={activeSection === 'trash' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('trash'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}><span className="library-icon"><Trash2 size={17}/></span><span className="library-copy"><strong>回收站</strong><small>恢复或永久清理</small></span><ChevronRight size={15}/></button>
+        <button type="button" className={`library-row ${activeSection === 'review' ? 'active' : ''}`} aria-label="待审核" title="待审核" aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('review'); setSelectedDocument(''); setSelectedKnowledge(''); setSelectedSubmission(''); setLibraryDetailsOpen(false) }}><span className="library-icon"><Clock3 size={17}/></span><span className="library-copy"><strong>待审核</strong><small>Agent 提交的知识</small></span><ChevronRight size={15}/></button>
+        <button type="button" className={`library-row ${activeSection === 'trash' ? 'active' : ''}`} aria-label="回收站" title="回收站" aria-current={activeSection === 'trash' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('trash'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}><span className="library-icon"><Trash2 size={17}/></span><span className="library-copy"><strong>回收站</strong><small>恢复或永久清理</small></span><ChevronRight size={15}/></button>
         {(activeSection === 'knowledge' || activeSection === 'graph') && <>
         <div className="nav-heading"><span>知识库</span><IconButton label="新建知识库" onClick={() => setCreateLibraryOpen(true)} busy={createLibrary.isPending}><Plus size={17} /></IconButton></div>
         {libraries.isLoading && <div className="sidebar-loading"><LoaderCircle className="spin" size={16}/> 正在载入</div>}
         {createLibrary.error && <p className="sidebar-error" role="alert">{(createLibrary.error as Error).message}</p>}
         {libraries.data?.map((library) => <div key={library.id} className="library-row-shell">
-          <button type="button" className={`library-row ${selectedLibrary === library.id ? 'active' : ''}`} aria-current={selectedLibrary === library.id ? 'true' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setSelectedLibrary(library.id); setSelectedFolder(''); setFavoritesOnly(false); setSelectedDocument(''); setSelectedKnowledge(''); setSearchResults(null); setSearchInfo(''); setFilterTags([]); setLibraryDetailsOpen(false) }}>
+          <button type="button" className={`library-row ${selectedLibrary === library.id ? 'active' : ''}`} aria-label={library.name} title={library.name} aria-current={selectedLibrary === library.id ? 'true' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setSelectedLibrary(library.id); setSelectedFolder(''); setFavoritesOnly(false); setSelectedDocument(''); setSelectedKnowledge(''); setSearchResults(null); setRetrievalResponse(null); setSearchInfo(''); setFilterTags([]); setLibraryDetailsOpen(false) }}>
             <span className={`library-icon ${libraryColorClass(library.color)}`}><LibraryIcon icon={library.icon}/></span><span className="library-copy"><span className="library-name-line"><strong>{library.name}</strong>{library.favorite && <Star size={12} fill="currentColor" aria-label="已标记重要"/>}</span><small>{library.description || '本地知识库'}</small></span><ChevronRight size={15}/>
           </button>
           {activeSection === 'knowledge' && <IconButton label={`编辑知识库 ${library.name}`} active={libraryDetailsOpen && selectedLibrary === library.id} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setSelectedLibrary(library.id); setSelectedFolder(''); setFavoritesOnly(false); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(true); setDetailPaneOpen(true) }}><Pencil size={14}/></IconButton>}
@@ -466,12 +510,12 @@ export function App() {
         </>}
       </nav>
       <div className="sidebar-footer">
-        <button type="button" className="footer-button" onClick={() => setSettingsOpen(true)}><Settings size={18}/><span>设置</span><kbd>Ctrl ,</kbd></button>
+        <button type="button" className="footer-button" aria-label="设置" title="设置" onClick={() => setSettingsOpen(true)}><Settings size={18}/><span>设置</span><kbd>Ctrl ,</kbd></button>
       </div>
     </aside>
 
     <main className="workspace">
-      {activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} view={skillsView} onViewChange={setSkillsView} selectedTargetId={selectedMappingTarget} onTargetSelect={setSelectedMappingTarget} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} selectedId={selectedSubmission} onSelect={setSelectedSubmission} /> : activeSection === 'trash' ? <TrashWorkspace items={trash.data ?? []} loading={trash.isLoading} error={trash.error as Error | null} onChanged={() => { void trash.refetch(); void libraries.refetch(); void documents.refetch() }} onConfirm={setConfirmRequest}/> : activeSection === 'graph' ? <RelationshipGraphWorkspace libraryId={selectedLibrary} libraryName={selectedLibraryValue?.name ?? ''} onSelectionChange={setGraphSelection} onOpenKnowledge={() => { setKnowledgeView('knowledge'); setActiveSection('knowledge') }} onCreateLibrary={() => setCreateLibraryOpen(true)}/> : <>
+      {activeSection === 'architecture' ? <ArchitectureWorkspace libraries={libraries.data ?? []} /> : activeSection === 'skills' ? <SkillsWorkspace libraries={libraries.data ?? []} selectedId={selectedSkill} onSelect={setSelectedSkill} view={skillsView} onViewChange={setSkillsView} selectedTargetId={selectedMappingTarget} onTargetSelect={setSelectedMappingTarget} /> : activeSection === 'review' ? <ReviewWorkspace libraries={libraries.data ?? []} selectedId={selectedSubmission} onSelect={setSelectedSubmission} /> : activeSection === 'trash' ? <TrashWorkspace items={trash.data ?? []} loading={trash.isLoading} error={trash.error as Error | null} onChanged={() => { void trash.refetch(); void libraries.refetch(); void documents.refetch() }} onConfirm={setConfirmRequest}/> : activeSection === 'graph' ? <RelationshipGraphWorkspace libraryId={selectedLibrary} libraryName={selectedLibraryValue?.name ?? ''} onSelectionChange={setGraphSelection} onOpenKnowledge={() => { setKnowledgeView('knowledge'); setActiveSection('knowledge') }} onCreateLibrary={() => setCreateLibraryOpen(true)}/> : <>
       {backendError && <div role="alert" className="alert-banner"><CircleAlert size={17}/>{backendError}</div>}
       <header className="workspace-header">
         <div className="workspace-title-block"><span className="eyebrow">当前知识库</span><div className="workspace-title-line"><h1>{selectedLibraryValue?.name ?? '全部知识'}</h1>{selectedLibraryValue?.favorite && <Star size={15} fill="currentColor" aria-label="已标记重要"/>}</div>{selectedLibraryValue?.tags?.length ? <div className="workspace-tags">{selectedLibraryValue.tags.slice(0, 4).map((tag) => <span className="tag" key={tag}><Tag size={11}/>{tag}</span>)}</div> : null}</div>
@@ -485,29 +529,29 @@ export function App() {
       </header>
       <div className="search-row">
         <Search size={19}/><input ref={searchInput} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') runSearch() }} placeholder="搜索知识、问题或精确短语…" aria-label="搜索知识" />
-        {query && <IconButton label="清空搜索" onClick={() => { if (!confirmUnsavedDraftLeave()) return; setQuery(''); setSearchResults(null); setSelectedKnowledge('') }}><X size={16}/></IconButton>}
-        <kbd>Ctrl K</kbd><button type="button" className="search-submit" onClick={() => runSearch()} disabled={!query.trim() || search.isPending}>{search.isPending ? <LoaderCircle className="spin" size={17}/> : '搜索'}</button>
+        {query && <IconButton label="清空搜索" onClick={() => { if (!confirmUnsavedDraftLeave()) return; setQuery(''); setSearchResults(null); setRetrievalResponse(null); setSelectedKnowledge('') }}><X size={16}/></IconButton>}
+        <kbd>Ctrl K</kbd><button type="button" className="search-submit" onClick={() => runSearch()} disabled={!query.trim() || search.isPending || retrievalSearch.isPending}>{search.isPending || retrievalSearch.isPending ? <LoaderCircle className="spin" size={17}/> : '搜索'}</button>
       </div>
       {urlOpen && <form className="url-import" onSubmit={(event) => { event.preventDefault(); importUrl.mutate() }}><Link2 size={18}/><label htmlFor="import-url">网页地址</label><input id="import-url" type="url" value={urlValue} onChange={(event) => setUrlValue(event.target.value)} placeholder="https://example.com/article" autoFocus/><button className="button primary" type="submit" disabled={importUrl.isPending || !urlValue.trim()}>{importUrl.isPending ? '正在保存…' : '保存网页'}</button><IconButton label="关闭" onClick={() => setUrlOpen(false)}><X size={17}/></IconButton>{importUrl.error && <span className="form-error" role="alert">{(importUrl.error as Error).message}</span>}</form>}
       {watchOpen && <form id="watch-directory-form" className="watch-directory-form" onSubmit={(event) => { event.preventDefault(); createWatch.mutate() }}><div className="watch-form-heading"><div><strong>添加监视目录</strong><span>目录中的新增或变更文件会进入导入队列。</span></div><IconButton label="关闭监视目录设置" onClick={() => { setWatchOpen(false); setWatchError('') }}><X size={17}/></IconButton></div><div className="watch-form-controls"><label htmlFor="watch-directory-path">目录路径</label><input id="watch-directory-path" value={watchPath} readOnly placeholder="选择一个本地目录"/><button type="button" className="button secondary" onClick={() => void chooseWatchDirectory()}>选择目录</button><button type="submit" className="button primary" disabled={createWatch.isPending || !watchPath.trim()}>{createWatch.isPending ? '正在添加…' : '添加监视'}</button></div>{watchError && <p className="form-error" role="alert">{watchError}</p>}</form>}
-      <div className="content-heading"><div><h2>{knowledgeView === 'knowledge' ? (searchResults ? '知识搜索结果' : '成型知识') : '来源文档'}</h2><span>{knowledgeView === 'knowledge' ? `${shownKnowledge.length} 个知识体` : `${shownDocuments.length} 个项目`}</span></div><div className="content-tools"><div className="segmented-control" role="group" aria-label="知识库内容视图"><button type="button" className={knowledgeView === 'sources' ? 'active' : ''} aria-pressed={knowledgeView === 'sources'} onClick={() => switchKnowledgeView('sources')}>来源文档</button><button type="button" className={knowledgeView === 'knowledge' ? 'active' : ''} aria-pressed={knowledgeView === 'knowledge'} onClick={() => switchKnowledgeView('knowledge')}>成型知识</button></div>{searchResults && <button type="button" className="text-button" onClick={() => setSaveSearchDialogOpen(true)} disabled={saveSearch.isPending}><Save size={15}/> {saveSearch.isPending ? '正在固定…' : '固定搜索'}</button>}<IconButton label="刷新" onClick={() => { void documents.refetch(); void knowledgeDirectory.refetch(); void jobs.refetch() }}><RefreshCw size={17}/></IconButton><IconButton label="筛选" active={filterOpen || filterTags.length > 0} pressed={filterOpen} controls="content-filter-panel" onClick={() => setFilterOpen((value) => !value)}><ListFilter size={17}/></IconButton></div></div>
+      <div className="content-heading"><div><h2>{knowledgeView === 'knowledge' ? (searchResults || retrievalResponse ? '统一检索结果' : '成型知识') : '来源文档'}</h2><span>{knowledgeView === 'knowledge' ? (retrievalResponse ? `${retrievalResponse.results.length} 个检索结果` : `${shownKnowledge.length} 个知识体`) : `${shownDocuments.length} 个项目`}</span></div><div className="content-tools"><div className="segmented-control" role="group" aria-label="知识库内容视图"><button type="button" className={knowledgeView === 'sources' ? 'active' : ''} aria-pressed={knowledgeView === 'sources'} onClick={() => switchKnowledgeView('sources')}>来源文档</button><button type="button" className={knowledgeView === 'knowledge' ? 'active' : ''} aria-pressed={knowledgeView === 'knowledge'} onClick={() => switchKnowledgeView('knowledge')}>成型知识</button></div>{(searchResults || retrievalResponse) && <button type="button" className="text-button" onClick={() => setSaveSearchDialogOpen(true)} disabled={saveSearch.isPending}><Save size={15}/> {saveSearch.isPending ? '正在固定…' : '固定搜索'}</button>}<IconButton label="刷新" onClick={() => { void documents.refetch(); void knowledgeDirectory.refetch(); void jobs.refetch(); if (retrievalResponse) retrievalSearch.mutate({ text: query, filters: retrievalFilters }) }}><RefreshCw size={17}/></IconButton><IconButton label="筛选" active={filterOpen || filterTags.length > 0} pressed={filterOpen} controls="content-filter-panel" onClick={() => setFilterOpen((value) => !value)}><ListFilter size={17}/></IconButton></div></div>
       {knowledgeView === 'sources' && <BatchToolbar selectedIds={selectedDocumentIds} folders={folders.data ?? []} busy={batchDocuments.isPending} onClear={() => setSelectedDocumentIds([])} onAction={(action) => batchDocuments.mutate({ documentIds: selectedDocumentIds, ...action })} onTrash={trashSelectedDocuments}/>}
       {filterOpen && <div id="content-filter-panel" className="filter-panel" role="region" aria-label="按标签筛选"><div className="filter-panel-heading"><strong>按标签筛选</strong><button type="button" className="text-button" onClick={() => setFilterTags([])} disabled={!filterTags.length}>清除筛选</button></div>{availableTags.length ? <div className="filter-options">{availableTags.map((tag) => <label key={tag}><input type="checkbox" checked={filterTags.includes(tag)} onChange={(event) => setFilterTags((current) => event.target.checked ? [...current, tag] : current.filter((item) => item !== tag))}/><span>{tag}</span></label>)}</div> : <p className="muted">当前内容还没有标签。</p>}</div>}
       <PipelineStatus jobs={pipelineJobs}/>
        {markdownLinkError && <div role="alert" className="inline-error"><CircleAlert size={18}/>{markdownLinkError}</div>}
       <section className="result-list" aria-live="polite">
-        {(documents.error || knowledgeDirectory.error || search.error || importFiles.error || importUrl.error || saveSearch.error) && <div role="alert" className="inline-error"><CircleAlert size={18}/>{String((documents.error || knowledgeDirectory.error || search.error || importFiles.error || importUrl.error || saveSearch.error)?.message)}</div>}
-        {knowledgeView === 'knowledge' ? shownKnowledge.map((item, index) => <button type="button" className={`result-card ${selectedKnowledge.startsWith(item.uri) ? 'active' : ''}`} key={item.uri} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(`${item.uri}?revision=${item.revision}`); setSelectedDocument(''); setLibraryDetailsOpen(false) }}><span className="rank">{String(index + 1).padStart(2, '0')}</span><div className="result-body"><div className="result-title"><strong>{item.title}</strong><span>{item.type}{item.subtype ? ` · ${item.subtype}` : ''}</span></div><p>{item.description}</p><div className="result-meta"><span>{item.language} · r{item.revision}</span><span>{item.trust === 'verified' ? '已验证' : '未验证'}{item.flags.length ? ` · ${item.flags.join('、')}` : ''}</span></div></div></button>) : shownDocuments.map((document, index) => <DocumentRow key={document.id} document={document} active={selectedDocument === document.id} selected={selectedDocumentIds.includes(document.id)} onSelect={(event) => selectDocument(document, index, event)} onReindex={() => batchDocuments.mutate({ documentIds: selectedDocumentIds.includes(document.id) ? selectedDocumentIds : [document.id], action: 'reindex' })} onTrash={() => trashDocuments(selectedDocumentIds.includes(document.id) ? selectedDocumentIds : [document.id])} />)}
+        {(documents.error || knowledgeDirectory.error || search.error || retrievalSearch.error || importFiles.error || importUrl.error || saveSearch.error) && <div role="alert" className="inline-error"><CircleAlert size={18}/>{String((documents.error || knowledgeDirectory.error || search.error || retrievalSearch.error || importFiles.error || importUrl.error || saveSearch.error)?.message)}</div>}
+        {knowledgeView === 'knowledge' ? retrievalResponse ? <RetrievalSearchPanel query={query} response={retrievalResponse} filters={retrievalFilters} loading={retrievalSearch.isPending} error={retrievalSearch.error} libraries={libraries.data ?? []} selectedLibrary={selectedLibrary} projects={retrievalProjects.data ?? []} onSearch={({ query: nextQuery, filters }) => { setQuery(nextQuery); setRetrievalFilters(filters); retrievalSearch.mutate({ text: nextQuery, filters }) }} onRetry={() => retrievalSearch.mutate({ text: query, filters: retrievalFilters })} /> : shownKnowledge.map((item, index) => <button type="button" className={`result-card ${selectedKnowledge.startsWith(item.uri) ? 'active' : ''}`} key={item.uri} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(`${item.uri}?revision=${item.revision}`); setSelectedDocument(''); setLibraryDetailsOpen(false) }}><span className="rank">{String(index + 1).padStart(2, '0')}</span><div className="result-body"><div className="result-title"><strong>{item.title}</strong><span>{item.type}{item.subtype ? ` · ${item.subtype}` : ''}</span></div><p>{item.description}</p><div className="result-meta"><span>{item.language} · r{item.revision}</span><span>{item.trust === 'verified' ? '已验证' : '未验证'}{item.flags.length ? ` · ${item.flags.join('、')}` : ''}</span></div></div></button>) : shownDocuments.map((document, index) => <DocumentRow key={document.id} document={document} active={selectedDocument === document.id} selected={selectedDocumentIds.includes(document.id)} onSelect={(event) => selectDocument(document, index, event)} onReindex={() => batchDocuments.mutate({ documentIds: selectedDocumentIds.includes(document.id) ? selectedDocumentIds : [document.id], action: 'reindex' })} onTrash={() => trashDocuments(selectedDocumentIds.includes(document.id) ? selectedDocumentIds : [document.id])} />)}
         {knowledgeView === 'sources' && !documents.isLoading && shownDocuments.length === 0 && <Empty icon={<FilePlus2 size={25}/>} title={filterTags.length ? '没有符合筛选的来源文档' : '还没有来源文档'} text={filterTags.length ? '清除部分标签筛选，或导入带有这些标签的资料。' : '导入文件或保存网页后，会在此保留原始资料。'} />}
-        {knowledgeView === 'knowledge' && !knowledgeDirectory.isLoading && shownKnowledge.length === 0 && <Empty icon={<BookOpen size={25}/>} title={filterTags.length ? '没有符合筛选的成型知识' : searchResults ? '没有找到匹配内容' : '还没有成型知识'} text={filterTags.length ? '清除部分标签筛选，或选择其他标签。' : searchResults ? '尝试更换关键词，或检查所选知识库的索引状态。' : '来源资料经整理、审核并发布后，会在这里供你浏览。'} />}
+        {knowledgeView === 'knowledge' && !retrievalResponse && !knowledgeDirectory.isLoading && shownKnowledge.length === 0 && <Empty icon={<BookOpen size={25}/>} title={filterTags.length ? '没有符合筛选的成型知识' : searchResults ? '没有找到匹配内容' : '还没有成型知识'} text={filterTags.length ? '清除部分标签筛选，或选择其他标签。' : searchResults ? '尝试更换关键词，或检查所选知识库的索引状态。' : '来源资料经整理、审核并发布后，会在这里供你浏览。'} />}
       </section>
       </>}
     </main>
 
-    <aside id="knowledge-detail-pane" ref={detailPaneRef} className={`detail-pane ${detailPaneResizing ? 'resizing' : ''}`} aria-label={detailPaneOpen ? (activeSection === 'skills' ? (skillsView === 'mappings' ? '外部映射详情' : 'Skill 详情') : activeSection === 'review' ? '待审核知识详情' : activeSection === 'graph' ? '关系图谱详情' : libraryDetailsOpen ? '知识库详情' : knowledgeView === 'knowledge' ? '成型知识详情' : '来源文档预览') : '已折叠的详情栏'}>
+    <aside id="knowledge-detail-pane" ref={detailPaneRef} className={`detail-pane ${detailPaneResizing ? 'resizing' : ''}`} aria-label={detailPaneOpen ? (activeSection === 'architecture' ? '项目架构详情' : activeSection === 'skills' ? (skillsView === 'mappings' ? '外部映射详情' : 'Skill 详情') : activeSection === 'review' ? '待审核知识详情' : activeSection === 'graph' ? '关系图谱详情' : libraryDetailsOpen ? '知识库详情' : knowledgeView === 'knowledge' ? '成型知识详情' : '来源文档预览') : '已折叠的详情栏'}>
       {detailPaneOpen ? <><div className={`detail-resizer ${detailPaneResizing ? 'active' : ''}`} role="separator" tabIndex={0} aria-label="调整详情栏宽度" aria-orientation="vertical" aria-valuemin={DETAIL_PANE_MIN_WIDTH} aria-valuemax={detailPaneMaximumForViewport()} aria-valuenow={detailPaneWidth} aria-valuetext={`${detailPaneWidth} 像素`} title="拖动调整详情栏宽度；使用左右方向键微调" onPointerDown={beginDetailPaneResize} onKeyDown={handleDetailPaneResizeKeyDown}><span aria-hidden="true" /></div>
       <div className="detail-pane-toolbar"><strong>{libraryDetailsOpen ? '知识库详情' : '详情'}</strong><IconButton label="收起详情栏" pressed={true} controls="knowledge-detail-pane" onClick={() => { if (confirmUnsavedDraftLeave()) setDetailPaneOpen(false) }}><PanelRight size={18}/></IconButton></div>
-      <div className="detail-pane-content">{activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : activeSection === 'review' ? <ReviewDetailPane selectedId={selectedSubmission} libraries={libraries.data ?? []} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('knowledge'); setSelectedSubmission(''); setSelectedKnowledge(''); setSelectedDocument(id) }} /> : activeSection === 'graph' ? <RelationshipGraphInspector selection={graphSelection} onOpenKnowledge={(uri, revision) => { setSelectedKnowledge(`${uri}?revision=${revision ?? 1}`); setSelectedDocument(''); setKnowledgeView('knowledge'); setActiveSection('knowledge') }} onOpenDocument={(id) => { setSelectedKnowledge(''); setSelectedDocument(id); setKnowledgeView('sources'); setActiveSection('knowledge') }}/> : libraryDetailsOpen ? <LibraryDetailPane library={selectedLibraryValue} onSaved={(library) => { queryClient.setQueryData<LibraryType[]>(['libraries'], (current) => current?.map((item) => item.id === library.id ? library : item)); setSelectedLibrary(library.id) }} onTrash={(library) => setConfirmRequest({ title: `将“${library.name}”移入回收站？`, description: '知识库及其文档会从列表、检索、MCP 和索引中排除；监视目录会暂停。', confirmLabel: '移入回收站', danger: true, onConfirm: async () => { await client.deleteLibrary(library.id); setSelectedLibrary(''); setLibraryDetailsOpen(false); await queryClient.invalidateQueries({ queryKey: ['libraries'] }); await queryClient.invalidateQueries({ queryKey: ['trash'] }); setUndo({ message: `已将“${library.name}”移入回收站`, run: async () => { await client.restoreTrash('library', library.id); await queryClient.invalidateQueries({ queryKey: ['libraries'] }) } }) } })} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(''); setSelectedDocument(id) }} onDraftDirty={setKnowledgeDraftDirty} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { void detail.refetch(); void documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} onDraftDirty={setDocumentDraftDirty} />}</div></> : <button className="collapsed-detail-toggle" type="button" aria-label="展开详情栏" title="展开详情栏" onClick={() => setDetailPaneOpen(true)}><PanelRight size={18}/></button>}
+      <div className="detail-pane-content">{activeSection === 'architecture' ? <div className="architecture-side-note"><Layers3 size={24}/><strong>项目架构</strong><p>文档、图形、版本差异和代码证据都按快照保存。生成成功后，可从主工作区导出文件。</p></div> : activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : activeSection === 'review' ? <ReviewDetailPane selectedId={selectedSubmission} libraries={libraries.data ?? []} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('knowledge'); setSelectedSubmission(''); setSelectedKnowledge(''); setSelectedDocument(id) }} /> : activeSection === 'graph' ? <RelationshipGraphInspector selection={graphSelection} onOpenKnowledge={(uri, revision) => { setSelectedKnowledge(`${uri}?revision=${revision ?? 1}`); setSelectedDocument(''); setKnowledgeView('knowledge'); setActiveSection('knowledge') }} onOpenDocument={(id) => { setSelectedKnowledge(''); setSelectedDocument(id); setKnowledgeView('sources'); setActiveSection('knowledge') }}/> : libraryDetailsOpen ? <LibraryDetailPane library={selectedLibraryValue} onSaved={(library) => { queryClient.setQueryData<LibraryType[]>(['libraries'], (current) => current?.map((item) => item.id === library.id ? library : item)); setSelectedLibrary(library.id) }} onTrash={(library) => setConfirmRequest({ title: `将“${library.name}”移入回收站？`, description: '知识库及其文档会从列表、检索、MCP 和索引中排除；监视目录会暂停。', confirmLabel: '移入回收站', danger: true, onConfirm: async () => { await client.deleteLibrary(library.id); setSelectedLibrary(''); setLibraryDetailsOpen(false); await queryClient.invalidateQueries({ queryKey: ['libraries'] }); await queryClient.invalidateQueries({ queryKey: ['trash'] }); setUndo({ message: `已将“${library.name}”移入回收站`, run: async () => { await client.restoreTrash('library', library.id); await queryClient.invalidateQueries({ queryKey: ['libraries'] }) } }) } })} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(''); setSelectedDocument(id) }} onDraftDirty={setKnowledgeDraftDirty} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { void detail.refetch(); void documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} onDraftDirty={setDocumentDraftDirty} />}</div></> : <button className="collapsed-detail-toggle" type="button" aria-label="展开详情栏" title="展开详情栏" onClick={() => setDetailPaneOpen(true)}><PanelRight size={18}/></button>}
     </aside>
     <GlobalBottomBar activeSection={activeSection} activeJobs={activeJobs} backendError={backendError} searchInfo={searchInfo} skillsView={skillsView} trashItemCount={trash.data?.length ?? 0} commandOpen={commandOpen} activityOpen={activityOpen} onOpenCommands={() => setCommandOpen(true)} onOpenActivity={() => setActivityOpen(true)} />
     <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
@@ -530,7 +574,7 @@ function buildCommands(input: {
   setWatchManagerOpen: (value: boolean) => void
   importFiles: () => void
   runSearch: () => void
-  setActiveSection: (value: 'knowledge'|'graph'|'skills'|'review'|'trash') => void
+  setActiveSection: (value: 'knowledge'|'graph'|'architecture'|'skills'|'review'|'trash') => void
 }): WorkbenchAction[] {
   const libraryReason = input.selectedLibrary ? undefined : '请先选择知识库'
   return [
@@ -541,6 +585,7 @@ function buildCommands(input: {
     { id: 'activity', label: '打开活动中心', keywords: 'jobs task history', run: () => input.setActivityOpen(true) },
     { id: 'review', label: '前往审核工作台', keywords: 'review revision', run: () => input.setActiveSection('review') },
     { id: 'graph', label: '打开关系图谱', keywords: 'graph network relation', disabledReason: libraryReason, run: () => input.setActiveSection('graph') },
+    { id: 'architecture', label: '打开项目架构', keywords: 'project architecture code map', run: () => input.setActiveSection('architecture') },
     { id: 'trash', label: '打开回收站', keywords: 'restore delete', run: () => input.setActiveSection('trash') },
     { id: 'settings', label: '打开设置', keywords: 'preferences provider backup', shortcut: 'Ctrl ,', run: () => input.setSettingsOpen(true) },
   ]
@@ -802,6 +847,7 @@ function RevisionDiff({ current, candidate }: { current: string; candidate: stri
   for (let index = 0; index < max; index += 1) if (currentLines[index] !== candidateLines[index]) changed.add(index)
   return <section className="revision-diff" aria-label="稳定版与候选版差异"><div><strong>当前稳定版</strong><pre>{currentLines.map((line, index) => <span className={changed.has(index) ? 'changed removed' : ''} key={index}>{line || ' '}{'\n'}</span>)}</pre></div><div><strong>候选修订</strong><pre>{candidateLines.map((line, index) => <span className={changed.has(index) ? 'changed added' : ''} key={index}>{line || ' '}{'\n'}</span>)}</pre></div></section>
 }
+
 function SkillHint() {
   return <Empty icon={<FolderArchive size={25}/>} title="选择一个 Skill" text="Skill 的标准入口、文件清单和知识库关联会显示在这里。" />
 }
@@ -1046,7 +1092,7 @@ function SettingsDialog({ open, onOpenChange, libraries }: { open: boolean; onOp
   const [runtime, setRuntime] = useState<RuntimeConfig>()
   const [runtimeError, setRuntimeError] = useState('')
   useEffect(() => { let mounted = true; getRuntime().then((value) => { if (mounted) setRuntime(value) }).catch((error) => { if (mounted) setRuntimeError(error instanceof Error ? error.message : String(error)) }); return () => { mounted = false } }, [])
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="settings-dialog"><Dialog.Title>设置</Dialog.Title><Dialog.Description>管理外观、模型、Agent 访问、安全和便携数据。</Dialog.Description><Dialog.Close asChild><button type="button" className="dialog-close" aria-label="关闭设置"><X size={19}/></button></Dialog.Close><Tabs.Root defaultValue="appearance" orientation="vertical" className="settings-tabs"><Tabs.List aria-label="设置分类"><Tabs.Trigger value="appearance"><Palette size={17}/>外观</Tabs.Trigger><Tabs.Trigger value="models"><Bot size={17}/>模型服务</Tabs.Trigger><Tabs.Trigger value="agents"><KeyRound size={17}/>Agent 访问</Tabs.Trigger><Tabs.Trigger value="data"><Database size={17}/>数据与备份</Tabs.Trigger><Tabs.Trigger value="plugins">可选插件</Tabs.Trigger><Tabs.Trigger value="privacy"><ShieldCheck size={17}/>隐私与安全</Tabs.Trigger></Tabs.List><div className="settings-panel"><Tabs.Content value="appearance"><AppearanceSettings/></Tabs.Content><Tabs.Content value="models"><ProviderSettings/></Tabs.Content><Tabs.Content value="agents"><TokenSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="data"><DataSettings runtime={runtime} runtimeError={runtimeError}/></Tabs.Content><Tabs.Content value="plugins"><OcrPluginSettings/></Tabs.Content><Tabs.Content value="privacy"><PrivacySettings libraries={libraries}/></Tabs.Content></div></Tabs.Root></Dialog.Content></Dialog.Portal></Dialog.Root>
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="settings-dialog"><Dialog.Title>设置</Dialog.Title><Dialog.Description>管理外观、模型、检索、Agent 访问、安全和便携数据。</Dialog.Description><Dialog.Close asChild><button type="button" className="dialog-close" aria-label="关闭设置"><X size={19}/></button></Dialog.Close><Tabs.Root defaultValue="appearance" orientation="vertical" className="settings-tabs"><Tabs.List aria-label="设置分类"><Tabs.Trigger value="appearance"><Palette size={17}/>外观</Tabs.Trigger><Tabs.Trigger value="models"><Bot size={17}/>模型服务</Tabs.Trigger><Tabs.Trigger value="retrieval"><Search size={17}/>检索模型</Tabs.Trigger><Tabs.Trigger value="agents"><KeyRound size={17}/>Agent 访问</Tabs.Trigger><Tabs.Trigger value="data"><Database size={17}/>数据与备份</Tabs.Trigger><Tabs.Trigger value="plugins">可选插件</Tabs.Trigger><Tabs.Trigger value="privacy"><ShieldCheck size={17}/>隐私与安全</Tabs.Trigger></Tabs.List><div className="settings-panel"><Tabs.Content value="appearance"><AppearanceSettings/></Tabs.Content><Tabs.Content value="models"><ProviderSettings/></Tabs.Content><Tabs.Content value="retrieval"><RetrievalModelSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="agents"><TokenSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="data"><DataSettings runtime={runtime} runtimeError={runtimeError}/></Tabs.Content><Tabs.Content value="plugins"><OcrPluginSettings/></Tabs.Content><Tabs.Content value="privacy"><PrivacySettings libraries={libraries}/></Tabs.Content></div></Tabs.Root></Dialog.Content></Dialog.Portal></Dialog.Root>
 }
 
 function AppearanceSettings() {
