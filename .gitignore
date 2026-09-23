@@ -1,5 +1,7 @@
 node_modules/
 .pnpm-store/
+/.codex/
+/tmp/
 .venv/
 __pycache__/
 *.py[cod]
@@ -19,4 +21,3 @@ services/worker/build/
 services/worker/dist/
 .env
 *.log
-

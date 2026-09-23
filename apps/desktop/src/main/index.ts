@@ -20,8 +20,8 @@ const isPrimaryInstance = app.requestSingleInstanceLock()
 
 
 const titleBarTheme = {
-  light: { color: '#ffffff', symbolColor: '#62707d' },
-  dark: { color: '#121920', symbolColor: '#a5b3bd' }
+  light: { color: '#ffffff', symbolColor: '#5f6368' },
+  dark: { color: '#212121', symbolColor: '#c4c4c4' }
 } as const
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null

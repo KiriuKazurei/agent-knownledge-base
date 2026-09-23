@@ -276,7 +276,7 @@ export function RelationshipGraphWorkspace({ libraryId, libraryName, onSelection
     savePositions.mutate({ workspaceId: graph.data.workspace.id, updates })
   }
 
-  if (!libraryId) return <section className="graph-workspace" aria-label="关系图谱">
+  if (!libraryId) return <section className="graph-workspace graph-workspace-empty" aria-label="关系图谱">
     <header className="graph-header"><div><span className="eyebrow">关系图谱 · 仅稳定知识</span><h1>关系图谱</h1><p>图谱按知识库隔离，不会跨库混合数据。</p></div></header>
     <div className="graph-stage"><div className="graph-empty"><Network size={30}/><h2>请先选择或创建知识库</h2><p>选择左侧知识库后即可读取对应的稳定知识关系。</p><div className="graph-empty-actions">{onCreateLibrary && <button type="button" className="button primary" aria-label="从关系图谱新建知识库" onClick={onCreateLibrary}>新建知识库</button>}<button type="button" className="button secondary" onClick={onOpenKnowledge}>返回知识管理</button></div></div></div>
   </section>

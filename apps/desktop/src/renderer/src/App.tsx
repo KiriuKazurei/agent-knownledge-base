@@ -467,27 +467,27 @@ export function App() {
   return <div className={`app-shell ${detailPaneOpen ? '' : 'detail-pane-collapsed'} ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`} style={{ '--detail-pane-width': `${detailPaneWidth}px` } as React.CSSProperties}>
     <div className="window-titlebar" aria-hidden="true"><div className="window-titlebar-brand"><span className="window-titlebar-mark"><Sparkles size={14}/></span><span>Knowledge Agent Hub</span></div></div>
     <aside className="sidebar" aria-label="知识库导航" data-collapsed={sidebarCollapsed || undefined}>
-      <div className="sidebar-header">
-        <button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} aria-expanded={!sidebarCollapsed} aria-controls="primary-sidebar-navigation" title={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} onClick={() => setSidebarCollapsed((value) => !value)}>
-          {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden="true"/> : <PanelLeftClose size={18} aria-hidden="true"/>}
-        </button>
-      </div>
       <nav id="primary-sidebar-navigation" className="sidebar-scroll" aria-label="知识库导航">
-        <div className="nav-heading"><span>工作区</span></div>
-        <button type="button" className={`library-row ${activeSection === 'knowledge' ? 'active' : ''}`} aria-label="知识管理文档、网页与检索" title="知识管理" aria-current={activeSection === 'knowledge' ? 'page' : undefined} onClick={() => { if (confirmUnsavedDraftLeave()) setActiveSection('knowledge') }}>
-          <span className="library-icon"><Library size={17}/></span><span className="library-copy"><strong>知识管理</strong><small>文档、网页与检索</small></span><ChevronRight size={15}/>
+        <div className="nav-heading workspace-heading">
+          <span>工作区</span>
+          <button type="button" className="sidebar-toggle" aria-label={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} aria-expanded={!sidebarCollapsed} aria-controls="primary-sidebar-navigation" title={sidebarCollapsed ? '展开左侧栏' : '折叠左侧栏'} onClick={() => setSidebarCollapsed((value) => !value)}>
+            {sidebarCollapsed ? <PanelLeftOpen size={18} aria-hidden="true"/> : <PanelLeftClose size={18} aria-hidden="true"/>}
+          </button>
+        </div>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'knowledge' ? 'active' : ''}`} aria-label="知识管理文档、网页与检索" title="知识管理" aria-current={activeSection === 'knowledge' ? 'page' : undefined} onClick={() => { if (confirmUnsavedDraftLeave()) setActiveSection('knowledge') }}>
+          <span className="workspace-nav-icon"><Library size={17}/></span><span className="workspace-nav-label">知识管理</span>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'graph' ? 'active' : ''}`} aria-label="关系图谱稳定知识与证据关系" title="关系图谱" aria-current={activeSection === 'graph' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('graph'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(true) }}>
-          <span className="library-icon"><Network size={17}/></span><span className="library-copy"><strong>关系图谱</strong><small>稳定知识与证据关系</small></span><ChevronRight size={15}/>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'graph' ? 'active' : ''}`} aria-label="关系图谱稳定知识与证据关系" title="关系图谱" aria-current={activeSection === 'graph' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('graph'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(true) }}>
+          <span className="workspace-nav-icon"><Network size={17}/></span><span className="workspace-nav-label">关系图谱</span>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'architecture' ? 'active' : ''}`} aria-label="项目架构代码理解、技术栈与架构图" title="项目架构" aria-current={activeSection === 'architecture' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('architecture'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}>
-          <span className="library-icon"><Layers3 size={17}/></span><span className="library-copy"><strong>项目架构</strong><small>代码理解、技术栈与架构图</small></span><ChevronRight size={15}/>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'architecture' ? 'active' : ''}`} aria-label="项目架构代码理解、技术栈与架构图" title="项目架构" aria-current={activeSection === 'architecture' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('architecture'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}>
+          <span className="workspace-nav-icon"><Layers3 size={17}/></span><span className="workspace-nav-label">项目架构</span>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'skills' ? 'active' : ''}`} aria-label="SkillsAgent 能力包" title="Skills" aria-current={activeSection === 'skills' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('skills'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false) }}>
-          <span className="library-icon"><FolderArchive size={17}/></span><span className="library-copy"><strong>Skills</strong><small>Agent 能力包</small></span><ChevronRight size={15}/>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'skills' ? 'active' : ''}`} aria-label="SkillsAgent 能力包" title="Skills" aria-current={activeSection === 'skills' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('skills'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false) }}>
+          <span className="workspace-nav-icon"><FolderArchive size={17}/></span><span className="workspace-nav-label">Skills</span>
         </button>
-        <button type="button" className={`library-row ${activeSection === 'review' ? 'active' : ''}`} aria-label="待审核" title="待审核" aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('review'); setSelectedDocument(''); setSelectedKnowledge(''); setSelectedSubmission(''); setLibraryDetailsOpen(false) }}><span className="library-icon"><Clock3 size={17}/></span><span className="library-copy"><strong>待审核</strong><small>Agent 提交的知识</small></span><ChevronRight size={15}/></button>
-        <button type="button" className={`library-row ${activeSection === 'trash' ? 'active' : ''}`} aria-label="回收站" title="回收站" aria-current={activeSection === 'trash' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('trash'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}><span className="library-icon"><Trash2 size={17}/></span><span className="library-copy"><strong>回收站</strong><small>恢复或永久清理</small></span><ChevronRight size={15}/></button>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'review' ? 'active' : ''}`} aria-label="待审核 Agent 提交的知识" title="待审核" aria-current={activeSection === 'review' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('review'); setSelectedDocument(''); setSelectedKnowledge(''); setSelectedSubmission(''); setLibraryDetailsOpen(false) }}><span className="workspace-nav-icon"><Clock3 size={17}/></span><span className="workspace-nav-label">待审核</span></button>
+        <button type="button" className={`workspace-nav-row ${activeSection === 'trash' ? 'active' : ''}`} aria-label="回收站，恢复或永久清理" title="回收站" aria-current={activeSection === 'trash' ? 'page' : undefined} onClick={() => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('trash'); setSelectedDocument(''); setSelectedKnowledge(''); setLibraryDetailsOpen(false); setDetailPaneOpen(false) }}><span className="workspace-nav-icon"><Trash2 size={17}/></span><span className="workspace-nav-label">回收站</span></button>
         {(activeSection === 'knowledge' || activeSection === 'graph') && <>
         <div className="nav-heading"><span>知识库</span><IconButton label="新建知识库" onClick={() => setCreateLibraryOpen(true)} busy={createLibrary.isPending}><Plus size={17} /></IconButton></div>
         {libraries.isLoading && <div className="sidebar-loading"><LoaderCircle className="spin" size={16}/> 正在载入</div>}
@@ -906,6 +906,7 @@ function SkillDetail({ skill, manifest, libraries, runtime, onDelete, deleteBusy
   const [uses, setUses] = useState<string[]>(skill.usesLibraryIds)
   const [requires, setRequires] = useState<string[]>(skill.requiresLibraryIds)
   const [openError, setOpenError] = useState('')
+  const [detailTab, setDetailTab] = useState<'entry' | 'files' | 'links'>('entry')
   const replaceMutation = useMutation({
     mutationFn: async (kind: 'skill-markdown'|'skill-zip') => {
       const paths = await window.kah.selectFiles(kind)
@@ -914,7 +915,7 @@ function SkillDetail({ skill, manifest, libraries, runtime, onDelete, deleteBusy
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['skills'] }); queryClient.invalidateQueries({ queryKey: ['skill', skill.id] }); queryClient.invalidateQueries({ queryKey: ['skill-manifest', skill.id] }) }
   })
-  useEffect(() => { setUses(skill.usesLibraryIds); setRequires(skill.requiresLibraryIds) }, [skill.id, skill.usesLibraryIds, skill.requiresLibraryIds])
+  useEffect(() => { setUses(skill.usesLibraryIds); setRequires(skill.requiresLibraryIds); setDetailTab('entry') }, [skill.id, skill.usesLibraryIds, skill.requiresLibraryIds])
   const toggle = (setter: React.Dispatch<React.SetStateAction<string[]>>, id: string) => setter((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])
   const folderPath = runtime ? `${runtime.dataRoot.replace(/[\\/]$/, '')}\\${skill.rootPath.replaceAll('/', '\\')}` : ''
   async function openSkillFolder() {
@@ -927,7 +928,40 @@ function SkillDetail({ skill, manifest, libraries, runtime, onDelete, deleteBusy
       setOpenError(error instanceof Error ? error.message : String(error))
     }
   }
-  return <div className="preview-shell skill-detail-shell"><header className="preview-header"><div className="preview-icon"><FolderArchive size={20}/></div><div><span>Agent Skill</span><h2>{skill.name}</h2></div></header><div className="preview-meta"><span className={`status-pill ${skill.status}`}>{skill.status === 'ready' ? '可用' : '无效'}</span><span><Database size={14}/>{skill.fileCount} 个文件</span></div><p className="settings-lead">{skill.description}</p>{skill.systemRole && <div className="info-card"><ShieldCheck size={18}/><div><strong>系统规范 Skill</strong><span>由系统维护，不能替换或删除。</span></div></div>}{skill.error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{skill.error}</div>}{(replaceMutation.error || linkError || openError) && <div role="alert" className="inline-error"><CircleAlert size={17}/>{openError || String(((replaceMutation.error || linkError) as Error).message)}</div>}<div className="preview-actions">{folderPath && <button type="button" className="button ghost" onClick={() => void openSkillFolder()}><FolderSearch2 size={16}/>打开文件夹</button>}<button type="button" className="button secondary" onClick={() => replaceMutation.mutate('skill-markdown')} disabled={Boolean(skill.systemRole) || replaceMutation.isPending || deleteBusy}><FileCode2 size={16}/>{replaceMutation.isPending ? '正在替换…' : '替换 Markdown'}</button><button type="button" className="button secondary" onClick={() => replaceMutation.mutate('skill-zip')} disabled={Boolean(skill.systemRole) || replaceMutation.isPending || deleteBusy}><Import size={16}/>{replaceMutation.isPending ? '正在替换…' : '替换 zip'}</button><button type="button" className="button ghost" onClick={onDelete} disabled={Boolean(skill.systemRole) || deleteBusy}><Trash2 size={16}/>{deleteBusy ? '正在删除…' : '删除'}</button></div><div className="skill-frontmatter"><strong>标准入口</strong><code>{skill.rootPath}/SKILL.md</code>{manifest?.entryPoint.content && <ReactMarkdown>{manifest.entryPoint.content}</ReactMarkdown>}</div>{manifest && <div className="skill-files"><h4>附属文件</h4>{manifest.files.map((file) => <div className="token-row" key={file.path}><File size={15}/><span>{file.path}</span><small>{file.size} bytes</small></div>)}</div>}<div className="skill-links"><h4>Skill 可调用的知识库</h4>{libraries.map((library) => <label className="switch-row" key={`uses-${library.id}`}><span>{library.name}</span><input type="checkbox" checked={uses.includes(library.id)} disabled={linkBusy} onChange={() => toggle(setUses, library.id)}/></label>)}<h4>知识库需要此 Skill</h4>{libraries.map((library) => <label className="switch-row" key={`requires-${library.id}`}><span>{library.name}</span><input type="checkbox" checked={requires.includes(library.id)} disabled={linkBusy} onChange={() => toggle(setRequires, library.id)}/></label>)}<button type="button" className="button primary" onClick={() => onSaveLinks(uses, requires)} disabled={linkBusy}>{linkBusy ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {linkBusy ? '正在保存…' : '保存关联'}</button></div></div>
+  return <div className="preview-shell skill-detail-shell">
+    <header className="preview-header"><div className="preview-icon"><FolderArchive size={20}/></div><div><span>Agent Skill</span><h2>{skill.name}</h2></div></header>
+    <div className="preview-meta"><span className={`status-pill ${skill.status}`}>{skill.status === 'ready' ? '可用' : '无效'}</span><span><Database size={14}/>{skill.fileCount} 个文件</span></div>
+    <p className="settings-lead">{skill.description}</p>
+    {skill.systemRole && <div className="info-card"><ShieldCheck size={18}/><div><strong>系统规范 Skill</strong><span>由系统维护，不能替换或删除。</span></div></div>}
+    {skill.error && <div role="alert" className="inline-error"><CircleAlert size={17}/>{skill.error}</div>}
+    {(replaceMutation.error || linkError || openError) && <div role="alert" className="inline-error"><CircleAlert size={17}/>{openError || String(((replaceMutation.error || linkError) as Error).message)}</div>}
+    <div className="preview-actions skill-detail-actions">
+      {folderPath && <button type="button" className="button secondary" title="打开文件夹" onClick={() => void openSkillFolder()}><FolderSearch2 size={14}/><span>打开文件夹</span></button>}
+      <button type="button" className="button secondary" title="替换 Markdown" onClick={() => replaceMutation.mutate('skill-markdown')} disabled={Boolean(skill.systemRole) || replaceMutation.isPending || deleteBusy}><FileCode2 size={14}/><span>{replaceMutation.isPending ? '正在替换…' : '替换 Markdown'}</span></button>
+      <button type="button" className="button secondary" title="替换 zip" onClick={() => replaceMutation.mutate('skill-zip')} disabled={Boolean(skill.systemRole) || replaceMutation.isPending || deleteBusy}><Import size={14}/><span>{replaceMutation.isPending ? '正在替换…' : '替换 zip'}</span></button>
+      <button type="button" className="button secondary" title="删除" onClick={onDelete} disabled={Boolean(skill.systemRole) || deleteBusy}><Trash2 size={14}/><span>{deleteBusy ? '正在删除…' : '删除'}</span></button>
+    </div>
+    <Tabs.Root className="skill-detail-tabs-root" value={detailTab} onValueChange={(value) => setDetailTab(value as typeof detailTab)}>
+      <Tabs.List className="skill-detail-tabs" aria-label="Skill 详情分页">
+        <Tabs.Trigger value="entry">入口内容</Tabs.Trigger>
+        <Tabs.Trigger value="files">附属文件 {manifest ? `· ${manifest.files.length}` : ''}</Tabs.Trigger>
+        <Tabs.Trigger value="links">知识库关联</Tabs.Trigger>
+      </Tabs.List>
+      <Tabs.Content value="entry" className="skill-detail-tab-panel">
+        <div className="skill-frontmatter"><strong>标准入口</strong><code>{skill.rootPath}/SKILL.md</code>{manifest?.entryPoint.content ? <ReactMarkdown>{manifest.entryPoint.content}</ReactMarkdown> : <p className="muted">正在读取 SKILL.md 内容…</p>}</div>
+      </Tabs.Content>
+      <Tabs.Content value="files" className="skill-detail-tab-panel">
+        <div className="skill-files"><h4>附属文件</h4>{manifest ? manifest.files.length ? manifest.files.map((file) => <div className="token-row" key={file.path}><File size={15}/><span>{file.path}</span><small>{file.size} bytes</small></div>) : <p className="muted">此 Skill 没有附属文件。</p> : <p className="muted">正在读取文件列表…</p>}</div>
+      </Tabs.Content>
+      <Tabs.Content value="links" className="skill-detail-tab-panel">
+        <div className="skill-links">
+          <section><h4>Skill 可调用的知识库</h4>{libraries.length ? libraries.map((library) => <label className="switch-row" key={`uses-${library.id}`}><span>{library.name}</span><input type="checkbox" checked={uses.includes(library.id)} disabled={linkBusy} onChange={() => toggle(setUses, library.id)}/></label>) : <p className="muted">当前没有可关联的知识库。</p>}</section>
+          <section><h4>知识库需要此 Skill</h4>{libraries.length ? libraries.map((library) => <label className="switch-row" key={`requires-${library.id}`}><span>{library.name}</span><input type="checkbox" checked={requires.includes(library.id)} disabled={linkBusy} onChange={() => toggle(setRequires, library.id)}/></label>) : <p className="muted">创建知识库后，可以在这里配置依赖关系。</p>}</section>
+          <button type="button" className="button primary" onClick={() => onSaveLinks(uses, requires)} disabled={linkBusy}>{linkBusy ? <LoaderCircle className="spin" size={16}/> : <Save size={16}/>} {linkBusy ? '正在保存…' : '保存关联'}</button>
+        </div>
+      </Tabs.Content>
+    </Tabs.Root>
+  </div>
 }
 
 function DocumentRow({ document, active, selected, onSelect, onReindex, onTrash }: { document: Document; active: boolean; selected: boolean; onSelect: (event: React.MouseEvent) => void; onReindex: () => void; onTrash: () => void }) {
