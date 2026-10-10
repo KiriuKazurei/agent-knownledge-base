@@ -275,7 +275,9 @@ func (s *Server) runArchitectureScanMode(parent context.Context, taskID string, 
 		return
 	}
 	if _, _, err = s.Store.SaveArchitectureSnapshotForTask(ctx, taskID, owner, task.LeaseToken, snapshot); err != nil {
-		if s.Logger != nil { s.Logger.Warn("architecture snapshot commit failed", "taskId", taskID, "error", err) }
+		if s.Logger != nil {
+			s.Logger.Warn("architecture snapshot commit failed", "taskId", taskID, "error", err)
+		}
 		return
 	}
 	if generate && project.Execution.Executor != "none" && project.Execution.Executor != "" {
@@ -290,26 +292,47 @@ func (s *Server) runArchitectureScanMode(parent context.Context, taskID string, 
 // restart produces one merged catch-up run and never concurrent work for the
 // same project.
 func (s *Server) StartArchitectureScheduler(ctx context.Context) {
-	if ctx == nil { ctx = context.Background() }
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.SetLifecycleContext(ctx)
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		_ = s.architectureScheduleTick(ctx, time.Now().UTC())
-		for { select { case <-ctx.Done(): return; case now := <-ticker.C: _ = s.architectureScheduleTick(ctx, now.UTC()) } }
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				_ = s.architectureScheduleTick(ctx, now.UTC())
+			}
+		}
 	}()
 }
 
 func (s *Server) architectureScheduleTick(ctx context.Context, now time.Time) error {
+	if !s.beginRuntimeOperation() {
+		return nil
+	}
+	defer s.endRuntimeOperation()
 	projects, err := s.Store.ListDueArchitectureProjects(ctx, now)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, due := range projects {
 		project, projectErr := s.Store.GetProject(ctx, due.ProjectID)
-		if projectErr != nil { continue }
+		if projectErr != nil {
+			continue
+		}
 		task, taskErr := s.Store.CreateArchitectureTask(ctx, project.ID, "scan")
 		if taskErr != nil {
-			if errors.Is(taskErr, storage.ErrProjectTaskActive) { continue }
-			if s.Logger != nil { s.Logger.Warn("scheduled architecture task could not be created", "projectId", project.ID, "error", taskErr) }
+			if errors.Is(taskErr, storage.ErrProjectTaskActive) {
+				continue
+			}
+			if s.Logger != nil {
+				s.Logger.Warn("scheduled architecture task could not be created", "projectId", project.ID, "error", taskErr)
+			}
 			continue
 		}
 		if markErr := s.Store.MarkArchitectureSchedule(ctx, project.ID, due.NextAt, now); markErr != nil {
@@ -344,7 +367,11 @@ func (s *Server) ResumeArchitectureTasks(ctx context.Context) error {
 		if projectErr != nil {
 			continue
 		}
-		if item.Kind == "scan" { go s.runArchitectureScan(ctx, item.ID, project) } else { go s.runArchitectureAnalysis(ctx, item.ID, project) }
+		if item.Kind == "scan" {
+			go s.runArchitectureScan(ctx, item.ID, project)
+		} else {
+			go s.runArchitectureAnalysis(ctx, item.ID, project)
+		}
 	}
 	return nil
 }

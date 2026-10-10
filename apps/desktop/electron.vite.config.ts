@@ -6,6 +6,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
+    // Build-time only. Official release verification rejects nonempty test
+    // feeds; runtime environment variables cannot redirect production updates.
+    define: { __KAH_UPDATE_TEST_URL__: JSON.stringify(process.env.KAH_UPDATE_TEST_URL ?? '') },
     build: {
       rollupOptions: {
         input: { index: path.join(path.dirname(fileURLToPath(import.meta.url)), 'src/main/index.ts') }

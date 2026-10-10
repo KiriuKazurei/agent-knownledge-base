@@ -59,6 +59,12 @@ export async function apiBinary(path: string, init: RequestInit = {}): Promise<B
   return response.blob()
 }
 
+/** Dedicated architecture-agent credentials are not desktop or MCP tokens. */
+export async function architectureAgentApi<T>(secret: string, path: string, init: RequestInit = {}): Promise<T> {
+  if (!secret.trim()) throw new Error('需要专用架构 Agent 凭证')
+  return api<T>(path, { ...init, headers: { ...init.headers, Authorization: `Bearer ${secret}` } })
+}
+
 type EmbeddingModelsResponse = { models: EmbeddingModel[] } | EmbeddingModel[]
 
 function unwrapEmbeddingModels(response: EmbeddingModelsResponse): EmbeddingModel[] {
@@ -176,8 +182,8 @@ export const client = {
   downloadArchitectureArtifact: (projectId: string, snapshotId: string, kind: string) => apiBinary(`/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(snapshotId)}/artifacts/${encodeURIComponent(kind)}`),
   architectureAgents: () => api<ArchitectureAgent[]>('/architecture/agents'),
   registerArchitectureAgent: (input: { name: string; capabilities: string[]; projectIds: string[] }) => api<ArchitectureAgentCredential>('/architecture/agents', { method: 'POST', body: JSON.stringify(input) }),
-  claimArchitectureAgentTask: (leaseSeconds?: number) => api<ArchitectureAgentLease>('/architecture/agent/tasks/claim', { method: 'POST', body: JSON.stringify({ leaseSeconds }) }),
-  heartbeatArchitectureAgentTask: (input: { taskId: string; leaseToken: string }) => api<void>('/architecture/agent/tasks/heartbeat', { method: 'POST', body: JSON.stringify(input) }),
-  submitArchitectureAgentResult: (input: { taskId: string; generation: number; leaseToken: string; analysis: ArchitectureAnalysis; artifacts: ArchitectureArtifactInput[] }) => api<ArchitectureTask>('/architecture/agent/tasks/result', { method: 'POST', body: JSON.stringify(input) }),
-  submitArchitectureAgentFailure: (input: { taskId: string; leaseToken: string; message: string }) => api<ArchitectureTask>('/architecture/agent/tasks/failure', { method: 'POST', body: JSON.stringify(input) })
+  claimArchitectureAgentTask: (secret: string, leaseSeconds?: number) => architectureAgentApi<ArchitectureAgentLease>(secret, '/architecture/agent/tasks/claim', { method: 'POST', body: JSON.stringify({ leaseSeconds }) }),
+  heartbeatArchitectureAgentTask: (secret: string, input: { taskId: string; leaseToken: string }) => architectureAgentApi<void>(secret, '/architecture/agent/tasks/heartbeat', { method: 'POST', body: JSON.stringify(input) }),
+  submitArchitectureAgentResult: (secret: string, input: { taskId: string; generation: number; leaseToken: string; analysis: ArchitectureAnalysis; artifacts: ArchitectureArtifactInput[] }) => architectureAgentApi<ArchitectureTask>(secret, '/architecture/agent/tasks/result', { method: 'POST', body: JSON.stringify(input) }),
+  submitArchitectureAgentFailure: (secret: string, input: { taskId: string; leaseToken: string; message: string }) => architectureAgentApi<ArchitectureTask>(secret, '/architecture/agent/tasks/failure', { method: 'POST', body: JSON.stringify(input) })
 }

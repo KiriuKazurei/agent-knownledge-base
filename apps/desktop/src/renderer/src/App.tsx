@@ -1,4 +1,6 @@
 import { OcrPluginSettings } from './OcrPluginSettings'
+import { UpdateNotice, UpdatesSettings, useDesktopUpdates } from './UpdatesSettings'
+import type { UpdateState } from '../../shared/updates'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import * as Dialog from '@radix-ui/react-dialog'
@@ -41,7 +43,7 @@ function Empty({ icon, title, text }: { icon: React.ReactNode; title: string; te
   return <div className="empty"><div className="empty-icon">{icon}</div><strong>{title}</strong><p>{text}</p></div>
 }
 
-function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, skillsView, trashItemCount, commandOpen, activityOpen, onOpenCommands, onOpenActivity }: { activeSection: 'knowledge'|'graph'|'architecture'|'skills'|'review'|'trash'; activeJobs: Job[]; backendError: string; searchInfo: string; skillsView: 'skills'|'mappings'; trashItemCount: number; commandOpen: boolean; activityOpen: boolean; onOpenCommands: () => void; onOpenActivity: () => void }) {
+function GlobalBottomBar({ version, activeSection, activeJobs, backendError, searchInfo, skillsView, trashItemCount, commandOpen, activityOpen, onOpenCommands, onOpenActivity }: { version: string; activeSection: 'knowledge'|'graph'|'architecture'|'skills'|'review'|'trash'; activeJobs: Job[]; backendError: string; searchInfo: string; skillsView: 'skills'|'mappings'; trashItemCount: number; commandOpen: boolean; activityOpen: boolean; onOpenCommands: () => void; onOpenActivity: () => void }) {
   const sectionLabel = ({ knowledge: '知识管理', graph: '关系图谱', architecture: '项目架构', skills: 'Skills', review: '待审核', trash: '回收站' } as const)[activeSection]
   const activityCount = activeJobs.length
   const sectionStatus = activeSection === 'knowledge'
@@ -76,7 +78,7 @@ function GlobalBottomBar({ activeSection, activeJobs, backendError, searchInfo, 
       <span>{sectionStatus}</span>
     </div>
     <div className="global-bottom-right">
-      <div className="global-bottom-meta"><span>{sectionMeta}</span><span className="global-bottom-separator" aria-hidden="true" /><span>v0.1.1</span></div>
+      <div className="global-bottom-meta"><span>{sectionMeta}</span><span className="global-bottom-separator" aria-hidden="true" /><span>v{version}</span></div>
       <nav className="global-bottom-actions" aria-label="全局功能">
         <button type="button" className={`global-bottom-button ${commandOpen ? 'active' : ''}`} aria-label="打开功能面板" aria-haspopup="dialog" aria-expanded={commandOpen} aria-controls="command-palette" onClick={onOpenCommands}>
           <Command size={16} aria-hidden="true" /><span>功能面板</span><kbd>Ctrl ⇧ P</kbd>
@@ -177,6 +179,7 @@ function isKnowledgePayload(value: unknown): value is KnowledgeRevision['payload
 }
 
 export function App() {
+  const updateState = useDesktopUpdates()
   const queryClient = useQueryClient()
   const ui = useUI()
   const [selectedLibrary, setSelectedLibrary] = useState<string>('')
@@ -236,6 +239,11 @@ export function App() {
     setKnowledgeDraftDirty(false)
     setDocumentDraftDirty(false)
     return true
+  }
+  function installUpdate() {
+    if (!window.confirm('确认重启 AKB 并安装已下载的更新？')) return
+    if (!confirmUnsavedDraftLeave()) return
+    void window.kah.updates.install()
   }
   useEffect(() => {
     if (!hasUnsavedDraft) return
@@ -553,8 +561,9 @@ export function App() {
       <div className="detail-pane-toolbar"><strong>{libraryDetailsOpen ? '知识库详情' : '详情'}</strong><IconButton label="收起详情栏" pressed={true} controls="knowledge-detail-pane" onClick={() => { if (confirmUnsavedDraftLeave()) setDetailPaneOpen(false) }}><PanelRight size={18}/></IconButton></div>
       <div className="detail-pane-content">{activeSection === 'architecture' ? <div className="architecture-side-note"><Layers3 size={24}/><strong>项目架构</strong><p>文档、图形、版本差异和代码证据都按快照保存。生成成功后，可从主工作区导出文件。</p></div> : activeSection === 'skills' ? skillsView === 'mappings' ? <SkillMappingDetailPane targetId={selectedMappingTarget} onDeleted={() => setSelectedMappingTarget('')} /> : <SkillDetailPane skillId={selectedSkill} libraries={libraries.data ?? []} onDeleted={() => setSelectedSkill('')} /> : activeSection === 'review' ? <ReviewDetailPane selectedId={selectedSubmission} libraries={libraries.data ?? []} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setActiveSection('knowledge'); setSelectedSubmission(''); setSelectedKnowledge(''); setSelectedDocument(id) }} /> : activeSection === 'graph' ? <RelationshipGraphInspector selection={graphSelection} onOpenKnowledge={(uri, revision) => { setSelectedKnowledge(`${uri}?revision=${revision ?? 1}`); setSelectedDocument(''); setKnowledgeView('knowledge'); setActiveSection('knowledge') }} onOpenDocument={(id) => { setSelectedKnowledge(''); setSelectedDocument(id); setKnowledgeView('sources'); setActiveSection('knowledge') }}/> : libraryDetailsOpen ? <LibraryDetailPane library={selectedLibraryValue} onSaved={(library) => { queryClient.setQueryData<LibraryType[]>(['libraries'], (current) => current?.map((item) => item.id === library.id ? library : item)); setSelectedLibrary(library.id) }} onTrash={(library) => setConfirmRequest({ title: `将“${library.name}”移入回收站？`, description: '知识库及其文档会从列表、检索、MCP 和索引中排除；监视目录会暂停。', confirmLabel: '移入回收站', danger: true, onConfirm: async () => { await client.deleteLibrary(library.id); setSelectedLibrary(''); setLibraryDetailsOpen(false); await queryClient.invalidateQueries({ queryKey: ['libraries'] }); await queryClient.invalidateQueries({ queryKey: ['trash'] }); setUndo({ message: `已将“${library.name}”移入回收站`, run: async () => { await client.restoreTrash('library', library.id); await queryClient.invalidateQueries({ queryKey: ['libraries'] }) } }) } })} /> : selectedKnowledge ? <KnowledgePreview detail={knowledgeDetail.data} loading={knowledgeDetail.isLoading} onOpenDocument={(id) => { if (!confirmUnsavedDraftLeave()) return; setSelectedKnowledge(''); setSelectedDocument(id) }} onDraftDirty={setKnowledgeDraftDirty} /> : <DocumentPreview detail={detail.data} loading={detail.isLoading} onSaved={() => { void detail.refetch(); void documents.refetch() }} onLink={(href, source) => { void openMarkdownLink(href, source) }} onDraftDirty={setDocumentDraftDirty} />}</div></> : <button className="collapsed-detail-toggle" type="button" aria-label="展开详情栏" title="展开详情栏" onClick={() => setDetailPaneOpen(true)}><PanelRight size={18}/></button>}
     </aside>
-    <GlobalBottomBar activeSection={activeSection} activeJobs={activeJobs} backendError={backendError} searchInfo={searchInfo} skillsView={skillsView} trashItemCount={trash.data?.length ?? 0} commandOpen={commandOpen} activityOpen={activityOpen} onOpenCommands={() => setCommandOpen(true)} onOpenActivity={() => setActivityOpen(true)} />
-    <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []}/>
+    <GlobalBottomBar version={updateState.currentVersion} activeSection={activeSection} activeJobs={activeJobs} backendError={backendError} searchInfo={searchInfo} skillsView={skillsView} trashItemCount={trash.data?.length ?? 0} commandOpen={commandOpen} activityOpen={activityOpen} onOpenCommands={() => setCommandOpen(true)} onOpenActivity={() => setActivityOpen(true)} />
+    <UpdateNotice state={updateState} onInstall={installUpdate}/>
+    <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} libraries={libraries.data ?? []} updateState={updateState} onInstallUpdate={installUpdate}/>
     <CreateLibraryDialog open={createLibraryOpen} onOpenChange={setCreateLibraryOpen} busy={createLibrary.isPending} error={createLibrary.error as Error | null} onCreate={(name, description) => createLibrary.mutate({ name, description })}/>
     <SaveSearchDialog open={saveSearchDialogOpen} onOpenChange={setSaveSearchDialogOpen} defaultName={query.slice(0, 48)} query={query} view={knowledgeView} tagCount={filterTags.length} busy={saveSearch.isPending} error={saveSearch.error as Error | null} onSave={(name) => saveSearch.mutate(name)}/>
     <WatchManagerDialog open={watchManagerOpen} onOpenChange={setWatchManagerOpen} libraryId={selectedLibrary}/>
@@ -1122,11 +1131,11 @@ function DocumentPreview({ detail, loading, onSaved, onLink, onDraftDirty }: { d
   </div>
 }
 
-function SettingsDialog({ open, onOpenChange, libraries }: { open: boolean; onOpenChange: (open:boolean) => void; libraries: LibraryType[] }) {
+function SettingsDialog({ open, onOpenChange, libraries, updateState, onInstallUpdate }: { open: boolean; onOpenChange: (open:boolean) => void; libraries: LibraryType[]; updateState: UpdateState; onInstallUpdate: () => void }) {
   const [runtime, setRuntime] = useState<RuntimeConfig>()
   const [runtimeError, setRuntimeError] = useState('')
   useEffect(() => { let mounted = true; getRuntime().then((value) => { if (mounted) setRuntime(value) }).catch((error) => { if (mounted) setRuntimeError(error instanceof Error ? error.message : String(error)) }); return () => { mounted = false } }, [])
-  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="settings-dialog"><Dialog.Title>设置</Dialog.Title><Dialog.Description>管理外观、模型、检索、Agent 访问、安全和便携数据。</Dialog.Description><Dialog.Close asChild><button type="button" className="dialog-close" aria-label="关闭设置"><X size={19}/></button></Dialog.Close><Tabs.Root defaultValue="appearance" orientation="vertical" className="settings-tabs"><Tabs.List aria-label="设置分类"><Tabs.Trigger value="appearance"><Palette size={17}/>外观</Tabs.Trigger><Tabs.Trigger value="models"><Bot size={17}/>模型服务</Tabs.Trigger><Tabs.Trigger value="retrieval"><Search size={17}/>检索模型</Tabs.Trigger><Tabs.Trigger value="agents"><KeyRound size={17}/>Agent 访问</Tabs.Trigger><Tabs.Trigger value="data"><Database size={17}/>数据与备份</Tabs.Trigger><Tabs.Trigger value="plugins">可选插件</Tabs.Trigger><Tabs.Trigger value="privacy"><ShieldCheck size={17}/>隐私与安全</Tabs.Trigger></Tabs.List><div className="settings-panel"><Tabs.Content value="appearance"><AppearanceSettings/></Tabs.Content><Tabs.Content value="models"><ProviderSettings/></Tabs.Content><Tabs.Content value="retrieval"><RetrievalModelSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="agents"><TokenSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="data"><DataSettings runtime={runtime} runtimeError={runtimeError}/></Tabs.Content><Tabs.Content value="plugins"><OcrPluginSettings/></Tabs.Content><Tabs.Content value="privacy"><PrivacySettings libraries={libraries}/></Tabs.Content></div></Tabs.Root></Dialog.Content></Dialog.Portal></Dialog.Root>
+  return <Dialog.Root open={open} onOpenChange={onOpenChange}><Dialog.Portal><Dialog.Overlay className="dialog-overlay"/><Dialog.Content className="settings-dialog"><Dialog.Title>设置</Dialog.Title><Dialog.Description>管理外观、模型、检索、Agent 访问、安全和便携数据。</Dialog.Description><Dialog.Close asChild><button type="button" className="dialog-close" aria-label="关闭设置"><X size={19}/></button></Dialog.Close><Tabs.Root defaultValue="appearance" orientation="vertical" className="settings-tabs"><Tabs.List aria-label="设置分类"><Tabs.Trigger value="appearance"><Palette size={17}/>外观</Tabs.Trigger><Tabs.Trigger value="models"><Bot size={17}/>模型服务</Tabs.Trigger><Tabs.Trigger value="retrieval"><Search size={17}/>检索模型</Tabs.Trigger><Tabs.Trigger value="agents"><KeyRound size={17}/>Agent 访问</Tabs.Trigger><Tabs.Trigger value="data"><Database size={17}/>数据与备份</Tabs.Trigger><Tabs.Trigger value="plugins">可选插件</Tabs.Trigger>{updateState.enabled && <Tabs.Trigger value="updates"><RefreshCw size={17}/>应用更新</Tabs.Trigger>}<Tabs.Trigger value="privacy"><ShieldCheck size={17}/>隐私与安全</Tabs.Trigger></Tabs.List><div className="settings-panel"><Tabs.Content value="appearance"><AppearanceSettings/></Tabs.Content><Tabs.Content value="models"><ProviderSettings/></Tabs.Content><Tabs.Content value="retrieval"><RetrievalModelSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="agents"><TokenSettings libraries={libraries}/></Tabs.Content><Tabs.Content value="data"><DataSettings runtime={runtime} runtimeError={runtimeError}/></Tabs.Content><Tabs.Content value="plugins"><OcrPluginSettings/></Tabs.Content>{updateState.enabled && <Tabs.Content value="updates"><UpdatesSettings state={updateState} onInstall={onInstallUpdate}/></Tabs.Content>}<Tabs.Content value="privacy"><PrivacySettings libraries={libraries}/></Tabs.Content></div></Tabs.Root></Dialog.Content></Dialog.Portal></Dialog.Root>
 }
 
 function AppearanceSettings() {

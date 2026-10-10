@@ -19,6 +19,15 @@ func (s *Server) listSkillMappingTargets(c *gin.Context) {
 	c.JSON(http.StatusOK, items)
 }
 
+func (s *Server) getSkillMappingTarget(c *gin.Context) {
+	item, err := s.Store.GetSkillMappingTarget(operationContext(c), c.Param("id"))
+	if err != nil {
+		s.writeSkillMappingError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, item)
+}
+
 func (s *Server) createSkillMappingTarget(c *gin.Context) {
 	var input model.CreateSkillMappingTargetRequest
 	if !bind(c, &input) {

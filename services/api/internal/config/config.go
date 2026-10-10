@@ -8,6 +8,9 @@ import (
 	"path/filepath"
 )
 
+// Release builds inject the root package version with -ldflags.
+var BuildVersion = "0.1.2"
+
 type Config struct {
 	Host         string
 	Port         string
@@ -26,7 +29,7 @@ func Load() (Config, error) {
 	flag.StringVar(&cfg.WorkerCmd, "worker", env("KAH_WORKER_CMD", ""), "worker executable")
 	flag.Parse()
 	cfg.DesktopToken = os.Getenv("KAH_DESKTOP_TOKEN")
-	cfg.Version = "0.1.1"
+	cfg.Version = BuildVersion
 
 	if ip := net.ParseIP(cfg.Host); ip == nil || !ip.IsLoopback() {
 		if os.Getenv("KAH_ALLOW_LAN") != "1" {

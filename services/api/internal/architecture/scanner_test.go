@@ -224,6 +224,44 @@ func containsFile(values []model.ArchitectureFile, expected string) bool {
 	return false
 }
 
+func TestGitMetadataIsScopedToScannedSubdirectory(t *testing.T) {
+	root := t.TempDir()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is unavailable")
+	}
+	writeFixture(t, root, "package.json", `{"name":"parent"}`)
+	writeFixture(t, root, "child/package.json", `{"name":"child"}`)
+	writeFixture(t, root, "child/src/main.ts", "original\n")
+	run := func(args ...string) {
+		t.Helper()
+		if output, err := gitCommand(context.Background(), root, args...); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, output)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "scanner@example.test")
+	run("config", "user.name", "scanner")
+	run("add", ".")
+	run("commit", "-qm", "initial")
+	writeFixture(t, root, "package.json", `{"name":"parent-changed"}`)
+	snapshot, err := Scan(context.Background(), ScanConfig{RootPath: filepath.Join(root, "child")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.GitDirty || len(snapshot.GitChangedPaths) != 0 {
+		t.Fatalf("parent changes leaked into child: %v", snapshot.GitChangedPaths)
+	}
+	writeFixture(t, root, "child/src/main.ts", "changed\n")
+	writeFixture(t, root, "child/你好 name.ts", "new\n")
+	snapshot, err = Scan(context.Background(), ScanConfig{RootPath: filepath.Join(root, "child")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.GitDirty || len(snapshot.GitChangedPaths) != 2 || !contains(snapshot.GitChangedPaths, "src/main.ts") || !contains(snapshot.GitChangedPaths, "你好 name.ts") {
+		t.Fatalf("child-relative paths were lost: %v", snapshot.GitChangedPaths)
+	}
+}
+
 func TestGitPorcelainStatusKeepsUnicodeAndSpacePaths(t *testing.T) {
 	root := t.TempDir()
 	if _, err := exec.LookPath("git"); err != nil {

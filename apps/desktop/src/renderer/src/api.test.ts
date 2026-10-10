@@ -21,6 +21,15 @@ test('includes the diagnostic request ID in an API failure', async () => {
   await expect(client.libraries()).rejects.toThrow('OCR resource missing（请求 ID：trace-0908）')
 })
 
+test('architecture leases use an explicit agent secret, not the desktop token', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(response({ task: null }))
+  vi.stubGlobal('fetch', fetchMock)
+  await client.claimArchitectureAgentTask('example-agent-secret', 60)
+  expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer example-agent-secret')
+  await expect(client.claimArchitectureAgentTask('')).rejects.toThrow('需要专用架构 Agent 凭证')
+  expect(fetchMock).toHaveBeenCalledTimes(1)
+})
+
 test('unwraps the embedding model list returned by the real service contract', async () => {
   const fetchMock = vi.fn()
   vi.stubGlobal('fetch', fetchMock)

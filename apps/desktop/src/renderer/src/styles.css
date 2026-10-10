@@ -719,3 +719,6 @@ body.is-resizing-detail-pane, body.is-resizing-detail-pane * { cursor: col-resiz
 .architecture-notice{padding-inline:0;background:transparent}
 .architecture-notice.warning,.architecture-notice.stale{border:0;background:transparent}
 @media(max-width:680px){.architecture-project-list{border:0}.architecture-metric-grid{column-gap:14px}}
+/* Installed-only update affordances reuse the existing theme and controls. */
+.update-notice { position: fixed; z-index: 60; right: 24px; bottom: 54px; display: flex; align-items: center; gap: 12px; padding: 12px 16px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px #0002; max-width: calc(100vw - 48px); }
+.update-release-notes { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 220px; overflow: auto; }

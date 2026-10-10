@@ -23,4 +23,18 @@ describe('desktop preload bridge', () => {
     expect(invoke).toHaveBeenNthCalledWith(1, 'dialog:select-directory')
     expect(invoke).toHaveBeenNthCalledWith(2, 'dialog:save-file', { defaultPath: 'architecture.svg', data: new Uint8Array([1, 2, 3]) })
   })
+
+  test('update state subscription removes exactly the listener it registered', async () => {
+    await import('./index')
+    const bridge = expose.mock.calls.at(-1)?.[1] as { updates: { install(): Promise<unknown>; onStateChanged(callback: () => void): () => void } }
+    const callback = vi.fn()
+    const unsubscribe = bridge.updates.onStateChanged(callback)
+    const listener = on.mock.calls.at(-1)?.[1]
+    listener({}, { status: 'ready' })
+    expect(callback).toHaveBeenCalledWith({ status: 'ready' })
+    unsubscribe()
+    expect(removeListener).toHaveBeenCalledWith('updates:state-changed', listener)
+    await bridge.updates.install()
+    expect(invoke).toHaveBeenCalledWith('updates:install')
+  })
 })

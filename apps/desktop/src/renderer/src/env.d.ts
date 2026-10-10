@@ -1,6 +1,7 @@
-interface RuntimeConfig { apiBaseUrl: string; desktopToken: string; dataRoot: string; version: string }
+interface RuntimeConfig { apiBaseUrl: string; desktopToken: string; dataRoot: string; version: string; applicationMode: import('../../shared/updates').ApplicationMode; updatesEnabled: boolean }
 interface Window {
   kah: {
+    updates: import('../../shared/updates').UpdatesBridge
     runtimeConfig(): Promise<RuntimeConfig>
     setTitleBarTheme(theme: 'light' | 'dark'): Promise<void>
     selectFiles(kind?: string): Promise<string[]>

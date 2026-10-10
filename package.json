@@ -1,6 +1,6 @@
 {
   "name": "knowledge-agent-hub",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Local-first knowledge management and retrieval hub for people and agents.",
   "license": "MIT",
@@ -11,14 +11,17 @@
   "scripts": {
     "dev": "pnpm --filter @kah/desktop dev",
     "build": "pnpm --filter @kah/desktop build && pnpm build:api",
-    "build:api": "go build -C services/api -o kah-api.exe ./cmd/server",
+    "build:api": "node scripts/build-api.cjs",
     "test": "pnpm test:web && pnpm test:api && pnpm test:worker",
     "test:web": "pnpm --filter @kah/desktop test",
     "test:api": "go -C services/api test ./...",
     "test:worker": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-worker.ps1",
     "typecheck": "pnpm --filter @kah/desktop typecheck",
     "build:worker": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-worker.ps1",
-    "package:win": "pnpm build:worker && pnpm build:api && pnpm --filter @kah/desktop package:win"
+    "package:win": "pnpm build:worker && pnpm build:api && pnpm --filter @kah/desktop package:win",
+    "docs:interfaces": "node scripts/generate-interface-docs.cjs",
+    "verify:interfaces": "node scripts/generate-interface-docs.cjs --check",
+    "verify:release": "node scripts/verify-release.cjs"
   },
   "devDependencies": {
     "@stoplight/spectral-cli": "^6.15.0"

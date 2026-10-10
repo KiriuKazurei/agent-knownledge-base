@@ -7,14 +7,29 @@ import path from 'node:path'
 import { installDiagnostics } from './diagnostics'
 import { installedDataRoot } from './runtimePaths'
 import { showWindowWhenReady } from './windowVisibility'
+import { applicationMode, UpdateController, type UpdaterAdapter } from './updateController'
 
-const API_PORT = 48761
+declare const __KAH_UPDATE_TEST_URL__: string
+const API_PORT = __KAH_UPDATE_TEST_URL__ ? 48765 : 48761
+if (__KAH_UPDATE_TEST_URL__) {
+  // NSIS may relaunch through Explorer, whose environment does not contain
+  // the test runner's variables. The isolated install's sibling profile is
+  // the deterministic fallback; production builds erase this entire branch.
+  const profile = process.env.KAH_UPDATE_TEST_PROFILE ?? (app.isPackaged ? path.resolve(path.dirname(app.getPath('exe')), '..', 'profile') : undefined)
+  if (!profile || !path.isAbsolute(profile) || !existsSync(profile)) throw new Error('隔离更新验收构建必须提供独立且存在的 profile 目录')
+  app.setPath('appData', profile)
+  app.setPath('userData', path.join(profile, 'user'))
+  app.commandLine.appendSwitch('remote-debugging-port', '9228')
+  app.commandLine.appendSwitch('disable-gpu')
+}
 const BACKEND_START_TIMEOUT_MS = 90_000
 const BACKEND_RETRY_INTERVAL_MS = 250
 let backend: ChildProcess | undefined
 let mainWindow: BrowserWindow | undefined
 let isQuitting = false
 let backendMaintenance = false
+let updates: UpdateController
+let mode: ReturnType<typeof applicationMode>
 const desktopToken = `desktop_${randomBytes(32).toString('base64url')}`
 const isPrimaryInstance = app.requestSingleInstanceLock()
 
@@ -71,6 +86,52 @@ function dataRoot(): string {
   return app.isPackaged
     ? path.join(app.getPath('appData'), 'Knowledge Agent Hub', 'data')
     : path.join(app.getPath('userData'), 'data')
+}
+
+function detectApplicationMode(): ReturnType<typeof applicationMode> {
+  let marker: unknown
+  try { marker = JSON.parse(readFileSync(path.join(process.resourcesPath, 'kah-installation.json'), 'utf8')) } catch { /* Missing or malformed marker disables updates. */ }
+  return applicationMode({ packaged: app.isPackaged, platform: process.platform,
+    portableDirectory: process.env.PORTABLE_EXECUTABLE_DIR, portableEnvironment: process.env.KAH_PORTABLE,
+    portableFlag: existsSync(path.join(path.dirname(app.getPath('exe')), 'portable.flag')), installationMarker: marker })
+}
+
+async function prepareUpdateInstall(): Promise<void> {
+  if (detectApplicationMode() !== 'installed') throw new Error('只有安装版支持自动更新。')
+  if (backendMaintenance) throw new Error('备份恢复尚未完成，请稍后更新。')
+  const processToStop = backend
+  if (!processToStop || processToStop.exitCode !== null) throw new Error('后台服务不可用，请重新启动应用后更新。')
+  backendMaintenance = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let exited: (() => void) | undefined
+  let rejectExit: ((reason: Error) => void) | undefined
+  const stopped = new Promise<void>((resolve, reject) => {
+    rejectExit = reject
+    exited = ((code: number | null) => code === 0 ? resolve() : reject(new Error(`后台关闭失败（退出码 ${code}），已中止安装。`))) as () => void
+    processToStop.once('exit', exited)
+    timer = setTimeout(() => reject(new Error('后台服务未在 20 秒内退出，已中止安装。请检查日志并重新启动应用。')), 20_000)
+  })
+  // Attach a handler immediately so a rejected HTTP request cannot leave an
+  // unobserved shutdown-timeout promise behind.
+  void stopped.catch(() => {})
+  try {
+    const response = await fetch(`http://127.0.0.1:${API_PORT}/api/v1/runtime/shutdown`, {
+      method: 'POST', headers: { Authorization: `Bearer ${desktopToken}` }, signal: AbortSignal.timeout(5000)
+    })
+    if (response.status !== 202) {
+      const problem = await response.json().catch(() => ({})) as { detail?: string }
+      throw new Error(problem.detail ?? `后台关闭预检失败（${response.status}）`)
+    }
+    await stopped
+    backend = undefined
+  } catch (error) {
+    rejectExit?.(error instanceof Error ? error : new Error(String(error)))
+    throw error
+  } finally {
+    clearTimeout(timer)
+    if (exited) processToStop.removeListener('exit', exited)
+    backendMaintenance = false
+  }
 }
 
 function findExecutable(command: string): string | undefined {
@@ -172,6 +233,15 @@ function backupCandidatePath(relativePath: string): string {
 }
 
 async function restoreBackup(relativePath: string): Promise<{ restarted: true }> {
+  if (backendMaintenance) throw new Error('更新或备份恢复正在进行，请完成后再重试。')
+  // Reserve before the first await, so verification/extraction cannot race an
+  // update shutdown or another restore request.
+  backendMaintenance = true
+  try { return await performRestoreBackup(relativePath) }
+  finally { backendMaintenance = false }
+}
+
+async function performRestoreBackup(relativePath: string): Promise<{ restarted: true }> {
   const activeRoot = path.resolve(dataRoot())
   const parent = path.dirname(activeRoot)
   const archive = backupCandidatePath(relativePath)
@@ -191,7 +261,6 @@ async function restoreBackup(relativePath: string): Promise<{ restarted: true }>
   const stage = await mkdtemp(path.join(parent, `.kah-restore-${suffix}-`))
   const rollback = path.join(parent, `${path.basename(activeRoot)}.rollback-${suffix}`)
   const failed = path.join(parent, `${path.basename(activeRoot)}.failed-${suffix}`)
-  backendMaintenance = true
   stopBackend()
   try {
     execFileSync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-xf', archive, '-C', stage], { windowsHide: true, stdio: 'pipe' })
@@ -221,7 +290,6 @@ async function restoreBackup(relativePath: string): Promise<{ restarted: true }>
     }
     throw error
   } finally {
-    backendMaintenance = false
     if (existsSync(stage)) await rm(stage, { recursive: true, force: true })
   }
 }
@@ -274,6 +342,12 @@ async function createWindow(): Promise<void> {
     }
   })
   showWindowWhenReady(mainWindow)
+  mainWindow.webContents.on('will-prevent-unload', (event) => {
+    // The renderer already confirmed restart and draft discard. Once the
+    // backend is stopped, stale editor beforeunload listeners must not block
+    // that explicit update. Ordinary close/error paths retain draft protection.
+    if (mode === 'installed' && updates.getState().status === 'installing' && !backend) event.preventDefault()
+  })
   mainWindow.webContents.on('did-fail-load', (_event, code, description, validatedUrl) => console.error('renderer load failed', { code, description, validatedUrl }))
   mainWindow.webContents.on('render-process-gone', (_event, details) => console.error('renderer process exited', details))
   ;(mainWindow.webContents as unknown as { on: (event: string, listener: (...args: unknown[]) => void) => void }).on('console-message', logRendererConsole)
@@ -292,10 +366,44 @@ app.whenReady().then(async () => {
     return
   }
   installDiagnostics(path.join(dataRoot(), 'logs'))
+  mode = detectApplicationMode()
+  let updater: UpdaterAdapter | undefined
+  if (mode === 'installed') {
+    // Import only in an actual installation; portable/source/unpacked never
+    // initialize updater caches, timers, or update network requests.
+    const module = await import('electron-updater')
+    const testFeed = __KAH_UPDATE_TEST_URL__
+    if (testFeed) {
+      const url = new URL(testFeed)
+      if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') throw new Error('隔离更新验收源只允许回环 HTTP')
+      console.warn('KAH_UPDATE_TEST_BUILD', { testFeed })
+    }
+    // Keep cache inside the application's profile, including isolated test
+    // profiles and Windows setups with redirected LocalAppData directories.
+    class ProfileUpdater extends module.NsisUpdater {
+      constructor() {
+        super(testFeed ? { provider: 'generic', url: testFeed } : { provider: 'github', owner: 'KiriuKazurei', repo: 'agent-knownledge-base', private: false, protocol: 'https' })
+        // Retain the default Electron adapter and HTTP executor; supplying a
+        // custom adapter disables the engine's built-in HTTP executor.
+        Object.defineProperty(this.app, 'baseCachePath', { get: () => path.join(app.getPath('userData'), 'update-cache') })
+      }
+    }
+    const engine = new ProfileUpdater()
+    engine.logger = console
+    engine.disableWebInstaller = true
+    engine.installDirectory = path.dirname(app.getPath('exe'))
+    updater = engine
+  }
+  updates = new UpdateController({ version: app.getVersion(), mode, updater, logger: console, prepareInstall: prepareUpdateInstall,
+    emit: (state) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:state-changed', state) } })
   console.info('desktop starting', { version: app.getVersion(), packaged: app.isPackaged, executable: app.getPath('exe'), dataRoot: dataRoot(), platform: process.platform, electron: process.versions.electron })
   process.on('uncaughtExceptionMonitor', (error) => console.error('uncaught exception', error))
   process.on('unhandledRejection', (error) => console.error('unhandled rejection', error))
-  ipcMain.handle('runtime:config', () => ({ apiBaseUrl: `http://127.0.0.1:${API_PORT}/api/v1`, desktopToken, dataRoot: dataRoot(), version: app.getVersion() }))
+  ipcMain.handle('runtime:config', () => ({ apiBaseUrl: `http://127.0.0.1:${API_PORT}/api/v1`, desktopToken, dataRoot: dataRoot(), version: app.getVersion(), applicationMode: mode, updatesEnabled: mode === 'installed' }))
+  ipcMain.handle('updates:get-state', () => updates.getState())
+  ipcMain.handle('updates:check', () => updates.check())
+  ipcMain.handle('updates:download', () => updates.download())
+  ipcMain.handle('updates:install', () => updates.install())
   Menu.setApplicationMenu(null)
   ipcMain.handle('window:set-titlebar-theme', (_event, theme: 'light' | 'dark') => {
     mainWindow?.setTitleBarOverlay({ ...titleBarTheme[theme], height: 36 })
@@ -359,6 +467,7 @@ app.whenReady().then(async () => {
     return
   }
   await createWindow()
+  updates.start()
   app.on('activate', async () => { if (BrowserWindow.getAllWindows().length === 0) await createWindow() })
 }).catch((error) => { console.error('desktop startup failed', error); dialog.showErrorBox('Knowledge Agent Hub', String(error)); app.quit() })
 
@@ -383,5 +492,5 @@ function stopBackend(): void {
   try { process.kill(pid) } catch { /* The process may already have exited. */ }
 }
 
-app.on('before-quit', () => { console.info('desktop quitting'); isQuitting = true; stopBackend() })
+app.on('before-quit', () => { console.info('desktop quitting'); isQuitting = true; updates?.dispose(); stopBackend() })
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })

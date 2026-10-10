@@ -11,14 +11,14 @@ export function OcrPluginSettings() {
       if (operation === 'install') {
         const files = await window.kah.selectFiles('ocr-plugin')
         if (!files.length) return
-        return api('/plugins/ocr/install', {method:'POST',body:JSON.stringify({path:files[0]})})
+        return api<OcrPlugin>('/plugins/ocr/install', {method:'POST',body:JSON.stringify({path:files[0]})})
       }
       if (operation === 'check') {
         const health = await api<{available:boolean;message?:string}>('/ocr/health')
         if (!health.available) throw new Error(health.message || 'OCR 引擎尚不可用，请安装运行依赖后重试。')
         return health
       }
-      return api('/plugins/ocr', {method:operation === 'uninstall' ? 'DELETE':'PATCH', body:operation === 'uninstall' ? undefined:JSON.stringify({enabled:operation === 'enable'})})
+      return api<OcrPlugin>('/plugins/ocr', {method:operation === 'uninstall' ? 'DELETE':'PATCH', body:operation === 'uninstall' ? undefined:JSON.stringify({enabled:operation === 'enable'})})
     },
     onSuccess:() => query.invalidateQueries({queryKey:['ocr-plugin']})
   })

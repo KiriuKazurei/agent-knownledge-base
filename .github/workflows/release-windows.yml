@@ -1,0 +1,73 @@
+name: Windows release draft
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: {version: 11.21.0}
+      - uses: actions/setup-node@v4
+        with: {node-version: 24.14.0, cache: pnpm}
+      - uses: actions/setup-go@v5
+        with: {go-version: 1.26.1, cache-dependency-path: services/api/go.sum}
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.14'}
+      - run: pnpm install --frozen-lockfile
+      - run: python -m pip install -e ".\services\worker[dev,index,ocr,embedding]"
+      - name: Check tag and release versions
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          if ('${{ github.ref_type }}' -eq 'tag' -and '${{ github.ref_name }}' -ne "v$version") { throw 'Tag/version mismatch' }
+      - run: pnpm verify:interfaces
+      - run: pnpm typecheck
+      - run: pnpm test:web
+      - run: go test ./...
+        working-directory: services/api
+      - run: python -m pytest services/worker/tests
+      - name: Package without publishing
+        shell: pwsh
+        run: |
+          $env:KAH_BUILD_PYTHON = (Get-Command python).Source
+          pnpm package:win
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed' }
+          pnpm verify:release
+          if ($LASTEXITCODE -ne 0) { throw 'Artifact checks failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            release/*-setup.exe
+            release/*-setup.exe.blockmap
+            release/*-portable.exe
+            release/latest.yml
+            release/build-manifest.json
+            release/SHA256SUMS.txt
+      - name: Upload draft only
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          $tag = "v$version"
+          gh release view $tag --json isDraft > $env:RUNNER_TEMP\release-state.json 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            if (-not (Get-Content $env:RUNNER_TEMP\release-state.json | ConvertFrom-Json).isDraft) { throw 'Refusing to modify a published release' }
+          } else {
+            gh release create $tag --draft --title "AKB $tag" --notes 'Draft: awaiting installed A→B upgrade and desktop acceptance.' --target '${{ github.sha }}'
+            if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed' }
+          }
+          $assets = Get-ChildItem release -File | Where-Object { $_.Name -match '-setup\.exe(\.blockmap)?$|-portable\.exe$|^latest\.yml$|^build-manifest\.json$|^SHA256SUMS\.txt$' }
+          gh release upload $tag @($assets.FullName) --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Draft upload failed' }
+          # This workflow never publishes the draft. Publish only after recorded
+          # installed-upgrade and manual acceptance; CI tokens stay in CI.

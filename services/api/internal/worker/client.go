@@ -193,3 +193,18 @@ func (c *Client) Close() error {
 	}
 	return killErr
 }
+
+// CloseGracefully is used only by installed-update shutdown. Keep normal
+// Close's historical cancellation behavior for source/portable operation.
+func (c *Client) CloseGracefully(timeout time.Duration) error {
+	if c == nil {
+		return nil
+	}
+	_ = c.stdin.Close()
+	select {
+	case <-c.closed:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("timed out waiting for worker to stop gracefully")
+	}
+}

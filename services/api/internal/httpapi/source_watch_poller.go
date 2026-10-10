@@ -35,6 +35,10 @@ func (s *Server) runSourceWatchPoller(ctx context.Context, interval time.Duratio
 	inFlight := map[string]bool{}
 	done := make(chan string, 16)
 	poll := func() {
+		if !s.beginRuntimeOperation() {
+			return
+		}
+		defer s.endRuntimeOperation()
 		watches, err := s.Store.ListSourceWatches(ctx, "")
 		if err != nil {
 			s.logSourceWatch("list source watches", err)

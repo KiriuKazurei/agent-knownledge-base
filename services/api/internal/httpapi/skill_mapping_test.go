@@ -46,6 +46,10 @@ func TestSkillMappingDesktopAPILifecycle(t *testing.T) {
 	if list.Code != http.StatusOK || !containsText(list.Body.String(), target.ID) {
 		t.Fatalf("list mappings: %d %s", list.Code, list.Body.String())
 	}
+	detail := request(t, handler, http.MethodGet, "/api/v1/skill-mapping-targets/"+target.ID, nil, "desktop-test")
+	if detail.Code != http.StatusOK || !containsText(detail.Body.String(), target.ID) {
+		t.Fatalf("mapping detail: %d %s", detail.Code, detail.Body.String())
+	}
 	unauthorized := request(t, handler, http.MethodGet, "/api/v1/skill-mapping-targets", nil, "not-desktop")
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("mapping endpoint auth: %d %s", unauthorized.Code, unauthorized.Body.String())

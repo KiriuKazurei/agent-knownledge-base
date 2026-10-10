@@ -28,6 +28,30 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Health'}
+  /runtime/shutdown:
+    post:
+      operationId: shutdownRuntimeForInstalledUpdate
+      description: |
+        Main-process maintenance endpoint requiring the current desktop session
+        token. Atomically rejects active requests, imports, architecture tasks
+        and index builds, then stops new task admission and gracefully shuts
+        down API and Worker. The renderer and MCP/architecture Agents must not
+        call this endpoint directly.
+      responses:
+        '202':
+          description: Shutdown accepted; repeated requests are idempotent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accepted]
+                properties:
+                  accepted: {type: boolean, const: true}
+        '401': {description: Missing or invalid credential}
+        '403': {description: Credential is not the current desktop session token}
+        '409': {description: Active work prevents shutdown; retry when idle}
+        '500': {description: Active task preflight failed; shutdown not started}
+        '503': {description: Runtime shutdown callback is unavailable}
   /libraries:
     get:
       operationId: listLibraries
@@ -367,6 +391,15 @@ paths:
         name: targetId
         required: true
         schema: {type: string, format: uuid}
+    get:
+      operationId: getSkillMappingTarget
+      responses:
+        '200':
+          description: Mapping target with its current mappings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkillMappingTarget'}
+        '404': {description: Mapping target not found}
     patch:
       operationId: updateSkillMappingTarget
       requestBody:

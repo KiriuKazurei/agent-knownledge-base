@@ -7,6 +7,8 @@ import { client } from './api'
 import { useUI } from './store'
 import type { KAHSubmission } from './types'
 
+vi.mock('@uiw/react-codemirror', () => ({ default: ({ value, onChange }: { value: string; onChange: (value: string) => void }) => <textarea aria-label="测试正文编辑器" value={value} onChange={event => onChange(event.target.value)}/> }))
+
 vi.mock('./api', () => ({
   getRuntime: vi.fn(async () => ({apiBaseUrl:'http://127.0.0.1:1',desktopToken:'x',dataRoot:'data',version:'test'})),
   client: {
@@ -303,4 +305,35 @@ test('allows a new library to choose a summary model before enabling enhancement
   view.rerender(<QueryClientProvider client={query}><PrivacySettings libraries={[{...library, summaryProviderId:'local-model'}]}/></QueryClientProvider>)
   fireEvent.change(screen.getByRole('combobox', {name:'新库导入转换策略'}), {target:{value:'enhanced'}})
   await waitFor(() => expect(client.updateLibrary).toHaveBeenCalledWith('new-library', {importConversionMode:'enhanced'}))
+})
+
+test('requires restart confirmation and preserves an unsaved document when update is declined', async () => {
+  const library = { id: 'update-library', name: '更新保护测试库', description: '', icon: 'library', color: 'jade', tags: [], favorite: false, allowRemoteModels: false, autoSummarizeImports: false, autoReviewAgentSubmissions: false, createdAt: '', updatedAt: '' }
+  const document = { id: 'update-document', libraryId: library.id, title: '更新保护文档', mediaType: 'text/markdown', status: 'ready' as const, tags: [], favorite: false, createdAt: '', updatedAt: '' }
+  vi.mocked(client.libraries).mockResolvedValue([library])
+  vi.mocked(client.documents).mockResolvedValue([document])
+  vi.mocked(client.document).mockResolvedValue({ ...document, preview: [] })
+  const original = window.kah.updates
+  const install = vi.fn(async () => ({ enabled: true, status: 'installing' as const, currentVersion: '0.1.2' }))
+  const ready = { enabled: true, status: 'ready' as const, currentVersion: '0.1.2', targetVersion: '0.1.3' }
+  window.kah.updates = { getState: vi.fn(async () => ready), check: vi.fn(async () => ready), download: vi.fn(async () => ready), install, onStateChanged: vi.fn(() => () => {}) }
+  const confirm = vi.spyOn(window, 'confirm')
+  try {
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App/></QueryClientProvider>)
+    fireEvent.click(await screen.findByText(document.title))
+    fireEvent.click(await screen.findByRole('button', { name: '编辑正文' }))
+    fireEvent.change(await screen.findByLabelText('测试正文编辑器'), { target: { value: '未保存的正文' } })
+    const update = await screen.findByRole('button', { name: '重启并更新' })
+    confirm.mockReturnValueOnce(false)
+    fireEvent.click(update)
+    expect(install).not.toHaveBeenCalled()
+    confirm.mockReturnValueOnce(true).mockReturnValueOnce(false)
+    fireEvent.click(update)
+    expect(confirm).toHaveBeenLastCalledWith('文档正文有未保存修改。确定放弃这些修改并继续？')
+    expect(install).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('测试正文编辑器')).toHaveValue('未保存的正文')
+    confirm.mockReturnValueOnce(true).mockReturnValueOnce(true)
+    fireEvent.click(update)
+    await waitFor(() => expect(install).toHaveBeenCalledTimes(1))
+  } finally { cleanup(); window.kah.updates = original; confirm.mockRestore() }
 })

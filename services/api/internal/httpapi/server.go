@@ -44,6 +44,10 @@ type Server struct {
 	retrievalMu       sync.Mutex
 	retrievalRunning  map[string]bool
 	retrievalDirty    map[string]bool
+	runtimeMu         sync.Mutex
+	runtimeRequests   int
+	runtimeStopping   bool
+	runtimeStop       func()
 }
 type identity struct {
 	Desktop bool
@@ -100,7 +104,7 @@ func (s *Server) lifecycleContext() context.Context {
 func (s *Server) Router() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
-	router.Use(gin.Recovery(), s.requestContext(), cors())
+	router.Use(gin.Recovery(), s.requestContext(), cors(), s.runtimeGate())
 	readMCP := router.Group("/mcp/read")
 	readMCP.Use(s.mcpOrigin(), s.authenticate(), s.requireScope("mcp_read"))
 	readMCP.POST("", s.handleMCP("read"))
@@ -113,6 +117,7 @@ func (s *Server) Router() *gin.Engine {
 	auth.Use(s.authenticate())
 	admin := auth.Group("")
 	admin.Use(requireDesktop())
+	admin.POST("/runtime/shutdown", s.runtimeShutdown)
 	// Agent retrieval is native MCP only. The remaining Skill file endpoints
 	// are desktop management views, never Agent discovery or retrieval APIs.
 	admin.GET("/skills/:id/manifest", s.skillManifest)
@@ -173,6 +178,7 @@ func (s *Server) Router() *gin.Engine {
 	admin.PUT("/skills/:id/links", s.updateSkillLinks)
 	admin.DELETE("/skills/:id", s.deleteSkill)
 	admin.GET("/skill-mapping-targets", s.listSkillMappingTargets)
+	admin.GET("/skill-mapping-targets/:id", s.getSkillMappingTarget)
 	admin.POST("/skill-mapping-targets", s.createSkillMappingTarget)
 	admin.PATCH("/skill-mapping-targets/:id", s.updateSkillMappingTarget)
 	admin.POST("/skill-mapping-targets/:id/skills", s.addSkillMappings)

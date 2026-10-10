@@ -480,14 +480,7 @@ func gitMetadata(ctx context.Context, root string) (string, []string) {
 	if output, err := gitCommand(ctx, root, "rev-parse", "HEAD"); err == nil {
 		revision = strings.TrimSpace(string(output))
 	}
-	output, err := gitCommand(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return revision, nil
-	}
-	paths := map[string]bool{}
-	for path, _ := range parseGitStatusEntries(output) {
-		paths[path] = true
-	}
+	paths := gitStatusMap(ctx, root)
 	result := make([]string, 0, len(paths))
 	for path := range paths {
 		result = append(result, path)
@@ -498,12 +491,21 @@ func gitMetadata(ctx context.Context, root string) (string, []string) {
 
 func gitStatusMap(ctx context.Context, root string) map[string]string {
 	result := map[string]string{}
-	output, err := gitCommand(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	// Porcelain paths are relative to the repository, even when -C selects a
+	// subdirectory. Limit the pathspec and rebase paths to the scanned root.
+	prefixOutput, err := gitCommand(ctx, root, "rev-parse", "--show-prefix")
+	if err != nil {
+		return result
+	}
+	prefix := strings.TrimRight(string(prefixOutput), "\r\n")
+	output, err := gitCommand(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ".")
 	if err != nil {
 		return result
 	}
 	for path, status := range parseGitStatusEntries(output) {
-		result[path] = status
+		if strings.HasPrefix(path, prefix) {
+			result[strings.TrimPrefix(path, prefix)] = status
+		}
 	}
 	return result
 }
